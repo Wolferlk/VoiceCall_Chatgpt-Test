@@ -1,0 +1,44 @@
+Customized package
+
+
+Agent: Good morning/afternoon, Aahaas!! How may I assist you today?
+
+Customer: Hi, I’m looking for a customized travel package.
+
+Agent: Sure! We’d be happy to assist you with that. May I know your preferred travel destination, please?
+
+Customer: Singapore.
+
+Agent: Okay, Sir/Ma'am. Could you let us know your preferred travel dates?
+
+Customer: Around July 10th.
+
+Agent: Noted. How many nights would you prefer for the stay?
+
+Customer: 5 nights.
+
+Agent: Thank you. May I know the number of passengers traveling?
+
+Customer: 2 adults and 1 child.
+
+Agent: Alright. Could you please let us know the child’s age?
+
+Customer: 6 years old.
+
+Agent: Thank you for the information. Do you have any preferred hotel category such as 3-star, 4-star, or 5-star hotels?
+
+Customer: Preferably 3-star.
+
+Agent: Certainly. And what meal plan would you prefer? For example, breakfast only, half board, or full board?
+
+Customer: Breakfast only.
+
+Agent: Noted. Are there any specific sightseeing tours or activities you would like us to include in the package?
+
+Customer: Universal Studios and Night Safari.
+
+Agent: Okay, Sir/Ma'am. Thank you for sharing the details. We will prepare you the quotation based on your preferences and share it with you shortly.
+
+Customer: Alright, thank you.
+
+Agent: No worries, Sir/Ma'am. Please feel free to contact us if you need any further assistance.

@@ -1,0 +1,32 @@
+Flight inquires
+  
+
+Agent: Good morning/afternoon, Aahaas!! How may I assist you today?
+
+Customer: Hi, I’m looking for flight tickets to Malaysia.
+
+Agent: Certainly! May I know your preferred travel dates, please?
+
+Customer: Around July 12th.
+
+Agent: Thank you. And how many nights will you be staying?
+
+Customer: 5 nights.
+
+Agent: Noted. Could you also let us know the number of passengers traveling?
+
+Customer: 2 adults.
+
+Agent: Thank you. May I have your name, please?
+
+Customer: [Customer Name]
+
+Agent: And could you please confirm your contact number as well?
+
+Customer: 07XXXXXXXX.
+
+Agent: Perfect. We’ll check the available flight options and share the rates with you shortly through WhatsApp.
+
+Customer: Alright, thank you.
+
+Agent: You're most welcome. Please feel free to contact us if you need any further assistance.

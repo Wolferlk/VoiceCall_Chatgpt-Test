@@ -1,0 +1,8 @@
+node_modules
+.env
+dist
+coverage
+*.log
+server/uploads
+Laravel_Server/vendor
+Laravel_Server/.env

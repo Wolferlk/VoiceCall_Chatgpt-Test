@@ -1,0 +1,27 @@
+Buffets
+
+Agent: Good morning/afternoon, Aahaas!! How may I assist you today?
+
+Customer: Hi, I’d like to know what lunch and buffets buffets you currently have.
+
+Agent: Certainly! We currently have several buffet options available at hotels such as Cinnamon Red, Sofia Colombo, Cinnamon Grand, and many more.
+
+Agent: [Explaining the buffet details, timings, and rates.]
+
+Customer: Alright. Could you send me the buffet details and rates through WhatsApp?
+
+Agent: Certainly. May I have your name, please?
+
+Customer: [Customer Name]
+
+Agent: Thank you. Could you also let us know the preferred date and the number of guests?
+
+Customer: 4 people for June 15th.
+
+Agent: Noted. We’ll check the availability for your preferred date and the preferred hotel and let you know, Sir/Ma'am. In the meantime, we'll share you the buffet detail through WhatsApp shortly.
+
+Agent: Once confirmed, you’ll be able to place the order directly through our Aahaas app.
+
+Customer: Alright, thank you.
+
+Agent: Thank you. Please feel free to contact us if you need any further assistance. Have a nice day!!

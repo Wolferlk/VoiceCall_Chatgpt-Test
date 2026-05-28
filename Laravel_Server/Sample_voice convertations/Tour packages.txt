@@ -1,0 +1,31 @@
+Tour packages
+
+
+Agent: Good morning/afternoon, Aahaas!! How may I assist you today?
+
+Customer: Hi, I’d like to know what tour packages you currently have.
+
+Agent: Sure, Sir/Ma'am. We currently have several packages available for destinations such as Singapore, Malaysia, Thailand, and Vietnam.
+
+Agent: [Explaining the package details, inclusions, and costs.]
+
+Customer: Alright. Could you send me the details through WhatsApp?
+
+Agent: Sure, Sir/Ma'am. May I know your preferred travel dates, please?
+
+Customer: Around August 15th.
+
+Agent: Thank you. And how many passengers will be traveling?
+
+Customer: 2 adults.
+
+Agent: Noted. Would you require flight arrangements as well, or only the tour package?
+
+Customer: Yes, I need flights too.
+
+Agent: Sure, Sir/Ma'am. We’ll check the available flight options for your travel dates and share the rates with you along with the package details with you shortly through WhatsApp.
+
+Customer: Alright, thank you.
+
+Agent: Thank you, Sir/Ma'am. Please feel free to contact us if you need any further assistance. Have a nice day!!
+
