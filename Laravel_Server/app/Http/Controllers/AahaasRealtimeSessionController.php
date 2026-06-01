@@ -12,6 +12,12 @@ use Illuminate\Support\Facades\Log;
  * The client POSTs its raw SDP offer as text/plain (no JSON wrapper).
  * We forward it to OpenAI with the real API key and return the SDP answer.
  * This avoids any JSON serialisation issues with multi-line SDP strings.
+ *
+ * NOTE: The active "Aahaas Realtime V0.2" UI does NOT use this controller — it
+ * connects over a WebSocket to the Node proxy (server/src/realtime.js), where
+ * the realtime model, tool schema and system prompt live. Editing the tools or
+ * instructions here has NO effect on V0.2; change them in server/src/realtime.js.
+ * This SDP/WebRTC path is kept only for any future WebRTC-based client.
  */
 class AahaasRealtimeSessionController extends Controller
 {

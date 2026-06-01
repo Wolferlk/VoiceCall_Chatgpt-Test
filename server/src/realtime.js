@@ -37,6 +37,10 @@ Call this tool whenever the customer says ANYTHING about travel. You must:
 
 RULES:
 - Call fetch_travel_package for EVERY travel-related turn (add, change, price check, confirm).
+- Use new_request ONLY for the very first request or when the customer clearly wants a
+  different trip/destination from scratch. It RESETS the whole plan and clears everything
+  already added — so to add a hotel/activity or tweak nights/pax, use add_hotel / add_product /
+  change, NEVER new_request. When unsure between adding and changing, pick "change".
 - NEVER invent package details — only speak what the tool returns.
 - Do NOT ask the customer structured questions (destination, nights, etc.) — just let them speak naturally and pass their words to the tool.
 - After price_query or confirm, the tool returns instantly (no hold music needed).
@@ -117,9 +121,11 @@ function buildSessionUpdate(voice = "coral", country = "Sri Lanka") {
         input: {
           turn_detection: {
             type:                "server_vad",
-            threshold:           0.8,
+            // 0.8 was too aggressive — soft/short utterances never crossed it, so the
+            // model never took a turn and the tool never fired. 0.5 is the balanced default.
+            threshold:           0.5,
             prefix_padding_ms:   300,
-            silence_duration_ms: 1000,
+            silence_duration_ms: 800,
             create_response:     true,
           },
           transcription: { model: "gpt-realtime-whisper" },

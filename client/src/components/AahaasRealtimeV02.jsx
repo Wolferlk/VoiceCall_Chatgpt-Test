@@ -40,6 +40,11 @@ const PHASES = {
 
 function msToDisplay(ms) { return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`; }
 
+// Actions the /v1/voice/suggest API understands. Anything outside this set is
+// dropped from the payload so the API classifies the turn itself — we never
+// default a missing/garbled action to new_request, which would reset the cart.
+const VALID_SUGGEST_ACTIONS = ["new_request", "add_hotel", "add_product", "change", "price_query", "confirm"];
+
 function float32ToPcm16(f32) {
   const out = new Int16Array(f32.length);
   for (let i = 0; i < f32.length; i++) out[i] = Math.max(-32768, Math.min(32767, Math.round(f32[i] * 32768)));
@@ -377,23 +382,37 @@ export default function AahaasRealtimeV02() {
   }
 
   async function executePackageFetch(call_id, args) {
-    const { customer_voice_prompt = "", action = "new_request" } = args;
+    const customerPrompt = String(args.customer_voice_prompt ?? "").trim();
+    // Only honour a known action; an unknown/missing one is left null and omitted
+    // from the payload so the API classifies the turn (never silently new_request).
+    const action = VALID_SUGGEST_ACTIONS.includes(args.action) ? args.action : null;
 
-    // Fast actions (price_query, confirm) don't rebuild — no hold music needed
+    // Guard: malformed/empty tool args must not trigger a destructive empty call.
+    if (!customerPrompt) {
+      addLog("warn", "Tool call had no prompt — asking AI to restate");
+      sendWs({ type: "conversation.item.create", item: { type: "function_call_output", call_id,
+        output: "No customer words were captured this turn. Do NOT change the plan. Politely ask the customer to repeat what they'd like." } });
+      sendWs({ type: "response.create" });
+      setPhase("speaking");
+      return;
+    }
+
+    // Fast actions (price_query, confirm) don't rebuild — no hold music needed.
+    // An unknown action may re-plan server-side, so treat it as slow.
     const isSlowAction = !["price_query", "confirm"].includes(action);
 
     setPhase("searching");
     setStatusMsg(isSlowAction ? "Searching packages... 🎵" : "Checking price...");
     setPackageStatus("loading");
-    addLog("api-start", `→ fetch_travel_package [${action}]`, customer_voice_prompt.slice(0, 60));
+    addLog("api-start", `→ fetch_travel_package [${action || "auto"}]`, customerPrompt.slice(0, 60));
 
     if (isSlowAction && holdMusicEnabledRef.current) startHoldMusic();
 
     const payload = {
       tool: "fetch_travel_package",
-      customer_voice_prompt,
-      action,
+      customer_voice_prompt: customerPrompt,
     };
+    if (action) payload.action = action;   // omit when unknown => API classifies
     // Automatically include session_id if we have one (maintains cart state)
     if (voiceSessionIdRef.current) payload.session_id = voiceSessionIdRef.current;
 
@@ -408,7 +427,7 @@ export default function AahaasRealtimeV02() {
       });
       const data = await res.json().catch(() => ({}));
       addLog(res.ok ? "api-ok" : "api-err",
-        `${res.ok ? "✓" : "✗"} [${action}] — ${msToDisplay(Date.now() - t0)}`);
+        `${res.ok ? "✓" : "✗"} [${action || "auto"}] — ${msToDisplay(Date.now() - t0)}`);
 
       if (data.success) {
         // Save session_id for subsequent turns — this is how the API maintains cart state
@@ -417,7 +436,10 @@ export default function AahaasRealtimeV02() {
           addLog("info", `Session: ${data.session_id}`);
         }
 
-        setPackageStatus("ready");
+        // success:true can still carry an empty package (API's apology fallback).
+        // Don't show a green "Ready" badge unless real content came back.
+        const hasContent = (data.products?.length > 0) || data.hotel || data.pricing?.grand_total;
+        setPackageStatus(hasContent ? "ready" : "empty");
         setPackageText(data.voice_text || "");
 
         // Accumulate every fetch as a structured numbered entry
@@ -601,8 +623,8 @@ export default function AahaasRealtimeV02() {
   const canConnect    = ["idle", "failed", "completed"].includes(phase);
   const canDisconnect = ["connected", "listening", "speaking", "searching", "sending_wa"].includes(phase);
 
-  const pkgColor = { idle: "#6b7280", loading: "#f59e0b", ready: "#10b981", failed: "#ef4444" }[packageStatus] || "#6b7280";
-  const pkgLabel = { idle: "Not started", loading: "Searching...", ready: "Package Ready", failed: "Unavailable" }[packageStatus];
+  const pkgColor = { idle: "#6b7280", loading: "#f59e0b", ready: "#10b981", empty: "#f59e0b", failed: "#ef4444" }[packageStatus] || "#6b7280";
+  const pkgLabel = { idle: "Not started", loading: "Searching...", ready: "Package Ready", empty: "No package found", failed: "Unavailable" }[packageStatus];
   const waColor  = { idle: "#6b7280", sending: "#f59e0b", sent: "#10b981", failed: "#ef4444" }[quotationStatus] || "#6b7280";
 
   const card   = { background: "rgba(255,255,255,0.95)", border: "1px solid rgba(15,23,42,0.08)", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 12px rgba(15,23,42,0.06)" };

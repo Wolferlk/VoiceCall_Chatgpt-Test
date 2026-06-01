@@ -142,6 +142,18 @@ class AahaasRealtimeToolController extends Controller
         $cur     = $data['currency'] ?? 'USD';
         $intent  = $data['intent'] ?? '';
 
+        // 0. Empty result: the suggest API returns 200 with success:true and no
+        //    products when it can't build a package. Tell the AI explicitly so it
+        //    apologises instead of speaking a near-blank tool result.
+        $hasContent = ! empty($data['products'])
+            || ! empty($data['hotel'])
+            || isset($data['pricing']['grand_total']);
+        if (! $hasContent) {
+            $apology = trim((string) ($data['voice_text'] ?? ''));
+            return ($apology !== '' ? "SPEAK THIS: {$apology}\n" : '')
+                . 'No package was found for this request. Apologise briefly, do NOT invent options, and offer to follow up via WhatsApp.';
+        }
+
         // 1. The TTS-ready line (speak this)
         $voiceText = trim((string) ($data['voice_text'] ?? ''));
         if ($voiceText !== '') {
