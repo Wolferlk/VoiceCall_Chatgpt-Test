@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Jobs\SendWhatsAppQuotationJob;
 use App\Models\ServiceCall;
 use App\Services\AahaasAssistentV01Service;
 use Illuminate\Http\JsonResponse;
@@ -54,13 +53,17 @@ class AahaasAssistentV01SendQuotationController extends Controller
                 ], 422);
             }
 
-            SendWhatsAppQuotationJob::dispatch($call->call_id, $customerProfile, $report, $serviceCategories)
-                ->onQueue('aahaas-wa');
+            $result = $service->sendQuotation($call->call_id, $customerProfile, $report, $serviceCategories);
 
             return response()->json([
                 'call_id' => $call->call_id,
-                'queued'  => true,
-                'message' => 'WhatsApp quotation queued successfully.',
+                'queued'  => $result['api_sent'] === true,
+                'wa_id'   => $result['wa_id'],
+                'message' => $result['api_sent'] === true
+                    ? 'WhatsApp quotation sent successfully.'
+                    : ($result['error'] !== null && $result['error'] !== ''
+                        ? $result['error']
+                        : 'WhatsApp quotation could not be sent.'),
             ]);
         } catch (Throwable $throwable) {
             $status = $throwable->getCode();

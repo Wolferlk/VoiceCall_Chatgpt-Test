@@ -8,7 +8,7 @@ use RuntimeException;
 
 class AahaasAssistentV01Service extends AiAssistentFinalTestService
 {
-    private const RECENT_CONVERSATION_LIMIT = 8;
+    private const RECENT_CONVERSATION_LIMIT = 5;
 
     private string $voiceName = 'coral';
     private float $voiceSpeed = 1.0;
@@ -63,9 +63,9 @@ class AahaasAssistentV01Service extends AiAssistentFinalTestService
     public function buildGreeting(string $callId): string
     {
         $variants = [
-            "Good day, welcome to Aahaas. How can I help you today?",
-            "Hello, this is Aahaas. What can I help you with today?",
-            "Good day, you've reached Aahaas. How can I help?",
+            "Hello, this is Aahaas. How can I help?",
+            "Hi, Aahaas here. What can I do for you?",
+            "Good day, Aahaas speaking. How can I help?",
         ];
 
         return $variants[array_rand($variants)];
@@ -74,9 +74,9 @@ class AahaasAssistentV01Service extends AiAssistentFinalTestService
     public function buildPackageWaitMessage(): string
     {
         $variants = [
-            "I'm checking the best options now. Just a moment.",
-            "I'm putting the package together now. Please hold briefly.",
-            "I've got your request. One quick moment while I check the options.",
+            "I’m checking options now.",
+            "One quick moment while I check.",
+            "I’m putting the options together now.",
         ];
 
         return $variants[array_rand($variants)];
@@ -85,9 +85,9 @@ class AahaasAssistentV01Service extends AiAssistentFinalTestService
     public function buildPackageFailureCallbackReply(): string
     {
         $variants = [
-            "The package service is busy right now, but we've saved your request and will follow up soon.",
-            "I'm sorry, the package service is having trouble just now. We'll contact you shortly.",
-            "Our package service is busy at the moment, so we've kept your request safe for follow-up.",
+            "The package service is busy right now, but we’ve saved your request and will follow up soon.",
+            "The package service is having trouble just now. We’ll contact you shortly.",
+            "We’ve kept your request safe for follow-up while the package service is busy.",
         ];
 
         return $variants[array_rand($variants)];
@@ -96,9 +96,9 @@ class AahaasAssistentV01Service extends AiAssistentFinalTestService
     public function buildPackageDetailsPendingReply(): string
     {
         $variants = [
-            "The package is still loading, but I can keep going with a couple of quick details.",
-            "I'm still waiting on the package data, so let's keep the call moving with one more detail.",
-            "The package is on its way, and I can keep the conversation moving meanwhile.",
+            "The package is still loading, but I can keep going with one quick detail.",
+            "I’m still waiting on the package data, so let’s keep moving.",
+            "The package is on its way, and I can keep the chat moving.",
         ];
 
         return $variants[array_rand($variants)];
@@ -107,9 +107,9 @@ class AahaasAssistentV01Service extends AiAssistentFinalTestService
     public function buildClosingMessage(): string
     {
         $variants = [
-            "Thanks for calling Aahaas. We'll send the details via WhatsApp shortly.",
-            "Thank you for calling Aahaas. We'll follow up with your quotation soon.",
-            "Thanks for reaching out to Aahaas. Our team will be in touch shortly.",
+            "Thanks for calling Aahaas. We’ll send the details via WhatsApp shortly.",
+            "Thank you for calling Aahaas. We’ll follow up with your quotation soon.",
+            "Thanks for reaching out to Aahaas. We’ll be in touch shortly.",
         ];
 
         return $variants[array_rand($variants)];

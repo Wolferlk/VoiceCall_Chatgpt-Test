@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import AahaasAssistantCall from "./components/AahaasAssistantCall";
 import AahaasAssistentFinalV01 from "./components/AahaasAssistentFinalV01";
+import AahaasRealtimeV02 from "./components/AahaasRealtimeV02";
 import AahaasChatGpt3vHome from "./components/AahaasChatGpt3vHome";
 import AiAssistentFinalTest from "./components/AiAssistentFinalTest";
 import AssistenUvindu from "./components/Assisten_Uvindu";
@@ -26,6 +27,12 @@ const BACKEND_OPTIONS = {
 };
 
 const WORKSPACE_MODES = [
+  {
+    id: "aahaas-realtime-v02",
+    label: "Aahaas Realtime V0.2 ⚡",
+    kicker: "Ultra-low latency · WebRTC",
+    description: "Direct browser-to-OpenAI WebRTC connection. No separate STT/LLM/TTS steps — all handled natively. Response latency drops from ~10s to ~300ms."
+  },
   {
     id: "5v-chatgpt-assis",
     label: "5v ChatGPT ASSIS",
@@ -141,7 +148,7 @@ export default function App() {
   const [page, setPage] = useState(() =>
     typeof window !== "undefined" ? pageFromHash(window.location.hash) : "workspace"
   );
-  const [activeMode, setActiveMode] = useState("aahaas-assistent-final-v01");
+  const [activeMode, setActiveMode] = useState("aahaas-realtime-v02");
   const [speechText, setSpeechText] = useState("");
   const [speaking, setSpeaking] = useState(false);
   const [error, setError] = useState("");
@@ -497,6 +504,10 @@ export default function App() {
   const activeModeMeta = WORKSPACE_MODES.find((mode) => mode.id === activeMode) || WORKSPACE_MODES[0];
 
   function renderActivePanel() {
+    if (activeMode === "aahaas-realtime-v02") {
+      return <AahaasRealtimeV02 />;
+    }
+
     if (activeMode === "4v-chatgpt-assis") {
       return <FourVChatGptAssis />;
     }

@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Jobs\SendWhatsAppQuotationJob;
 use App\Models\ServiceCall;
 use App\Services\AahaasAssistentV01Service;
 use Illuminate\Http\JsonResponse;
@@ -50,16 +49,15 @@ class AahaasAssistentV01EndController extends Controller
                 $report['service_categories'] ?: []
             )));
 
-            // Dispatch WhatsApp quotation as a background job so it doesn't block the response
             $quotationQueued = false;
             if ($service->hasQuotationContacts($finalProfile)) {
-                SendWhatsAppQuotationJob::dispatch(
+                $sendResult = $service->sendQuotation(
                     $call->call_id,
                     $finalProfile,
                     $report,
                     $finalCategories
-                )->onQueue('aahaas-wa');
-                $quotationQueued = true;
+                );
+                $quotationQueued = $sendResult['api_sent'] === true;
             }
 
             $call->forceFill([

@@ -2,14 +2,12 @@
 
 namespace Tests\Feature;
 
-use App\Jobs\SendWhatsAppQuotationJob;
 use App\Models\ServiceCall;
 use App\Services\AahaasAssistentV01Service;
 use App\Services\ElevenLabsReceptionCallService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class AahaasCallApiTest extends TestCase
@@ -120,7 +118,9 @@ class AahaasCallApiTest extends TestCase
 
     public function test_aahaas_assistent_v01_send_quotation_accepts_whatsapp_number_alias(): void
     {
-        Queue::fake();
+        Http::fake([
+            'https://travel-parser-live.aahaas.com/v1/voice/send-whatsapp' => Http::response([], 200),
+        ]);
 
         $call = ServiceCall::create([
             'call_id' => 'CALL-V01WA1',
@@ -145,13 +145,12 @@ class AahaasCallApiTest extends TestCase
         $response->assertOk()
             ->assertJsonPath('queued', true);
 
-        Queue::assertPushed(SendWhatsAppQuotationJob::class, function (SendWhatsAppQuotationJob $job): bool {
-            $payload = (new \ReflectionClass($job))->getProperty('customerProfile');
-            $payload->setAccessible(true);
+        Http::assertSent(function ($request): bool {
+            $data = $request->data();
 
-            $customerProfile = $payload->getValue($job);
-
-            return ($customerProfile['contact_number'] ?? '') === '94778231121';
+            return ($data['waId'] ?? '') === '94778231121'
+                && ($data['customerName'] ?? '') === 'Sasindu'
+                && str_contains((string) ($data['prompt'] ?? ''), 'Customer wants a Sri Lanka trip.');
         });
     }
 

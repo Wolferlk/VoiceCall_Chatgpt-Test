@@ -84,12 +84,12 @@ function inferListeningProfile(questionText) {
   if (n.includes("package is okay") || n.includes("okay for you"))
     return { maxRecordMs: 12000, postSpeechSilenceMs: 2600, hint: "Mic ready. Say yes or explain what to change." };
   if (n.includes("special request") || n.includes("preferences") || n.includes("what needs to change"))
-    return { maxRecordMs: 18000, postSpeechSilenceMs: 2600, hint: "Mic ready. Take your time to explain." };
+    return { maxRecordMs: 15000, postSpeechSilenceMs: 1800, hint: "Mic ready. Take your time to explain." };
   if (n.includes("travel date") || n.includes("how many days") || n.includes("travelers") || n.includes("budget"))
-    return { maxRecordMs: 14000, postSpeechSilenceMs: 2800, hint: "Mic ready. Please answer when ready." };
+    return { maxRecordMs: 12000, postSpeechSilenceMs: 1800, hint: "Mic ready. Please answer when ready." };
   if (n.includes("help") || n.includes("assist") || n.includes("today"))
-    return { maxRecordMs: 16000, postSpeechSilenceMs: 2200, hint: "Mic ready. Please tell us how we can help." };
-  return { maxRecordMs: 15000, postSpeechSilenceMs: 2200, hint: "Mic ready. Please go ahead." };
+    return { maxRecordMs: 12000, postSpeechSilenceMs: 1800, hint: "Mic ready. Please tell us how we can help." };
+  return { maxRecordMs: 12000, postSpeechSilenceMs: 1800, hint: "Mic ready. Please go ahead." };
 }
 
 function msToDisplay(ms) {
@@ -121,7 +121,7 @@ export default function AahaasAssistentFinalV01() {
   const [outputVolume, setOutputVolume] = useState(1.0);
   const [musicLevel, setMusicLevel] = useState(0.18);
   const [micSensitivity, setMicSensitivity] = useState(10);
-  const [bgMusicEnabled, setBgMusicEnabled] = useState(true);
+  const [bgMusicEnabled, setBgMusicEnabled] = useState(false);
   const [micMuted, setMicMuted] = useState(false);
 
   // Terminal status
@@ -506,7 +506,7 @@ export default function AahaasAssistentFinalV01() {
       playRingTone();
       startCallDurationTimer();
 
-      await new Promise((resolve) => window.setTimeout(resolve, 500));
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
       setPhase("connecting");
       setCallStatus("Connecting to Aahaas Assistent V0.1...");
       addTerminalEntry("state", "Connecting...");
@@ -559,7 +559,7 @@ export default function AahaasAssistentFinalV01() {
     try {
       const profile = inferListeningProfile(lastReplyRef.current);
       setPhase("listening");
-      setCallStatus("I'm listening. Go ahead.");
+      setCallStatus("I’m listening.");
       setListeningHint(profile.hint);
       addTerminalEntry("state", "Listening — mic active");
 
@@ -721,7 +721,7 @@ export default function AahaasAssistentFinalV01() {
 
     try {
       setPhase("processing");
-      setCallStatus("Checking package options. Stay with me for a moment.");
+      setCallStatus("Checking package options.");
       addTerminalEntry("state", "Waiting for package results");
       await playHoldAudioLoop();
 
@@ -747,7 +747,7 @@ export default function AahaasAssistentFinalV01() {
               setError(error.message);
               if (autoLoopEnabledRef.current) await beginListening();
             });
-          }, 1500);
+          }, 900);
           return;
         }
 
@@ -790,7 +790,7 @@ export default function AahaasAssistentFinalV01() {
   async function sendTurn(audioBlob, transcriptText = "") {
     try {
       setPhase("processing");
-      setCallStatus("Aahaas is listening and preparing the next reply.");
+      setCallStatus("Aahaas is preparing the next reply.");
       addTerminalEntry("state", "Processing — sending turn to API");
 
       const formData = new FormData();
@@ -830,7 +830,7 @@ export default function AahaasAssistentFinalV01() {
           return;
         }
         if (data.wait_for_package) {
-          await waitForPackageResult();
+          if (autoLoopEnabledRef.current) await beginListening();
           return;
         }
         if (autoLoopEnabledRef.current) await beginListening();

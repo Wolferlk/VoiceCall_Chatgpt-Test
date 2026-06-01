@@ -8,7 +8,8 @@ const config = {
   clientUrl: process.env.CLIENT_URL || "http://localhost:5173",
   elevenlabsApiKey: process.env.ELEVENLABS_API_KEY || "",
   elevenlabsVoiceId: process.env.ELEVENLABS_VOICE_ID || "JBFqnCBsd6RMkjVDRZzb",
-  elevenlabsModelId: process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2"
+  elevenlabsModelId: process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2",
+  openaiApiKey: process.env.OPENAI_API_KEY || "",
 };
 
 export default config;
