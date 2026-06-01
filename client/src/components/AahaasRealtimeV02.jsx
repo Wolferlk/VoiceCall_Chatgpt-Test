@@ -102,6 +102,9 @@ export default function AahaasRealtimeV02() {
   const terminalEndRef     = useRef(null);
   const pendingFnRef       = useRef(null);
   const aiTransBufRef      = useRef("");
+  const responseBusyRef    = useRef(false);
+  const queuedResponseRef  = useRef(false);
+  const openingSentRef     = useRef(false);
   const detectedCountryRef   = useRef("Sri Lanka");
   const holdMusicEnabledRef  = useRef(true);
   const holdMusicVolumeRef   = useRef(0.28);
@@ -130,6 +133,20 @@ export default function AahaasRealtimeV02() {
   }
   function sendWs(obj) {
     if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify(obj));
+  }
+  function requestResponseCreate() {
+    if (responseBusyRef.current) {
+      queuedResponseRef.current = true;
+      return;
+    }
+    sendWs({ type: "response.create" });
+    responseBusyRef.current = true;
+  }
+  function flushQueuedResponseCreate() {
+    if (!queuedResponseRef.current || responseBusyRef.current) return;
+    queuedResponseRef.current = false;
+    sendWs({ type: "response.create" });
+    responseBusyRef.current = true;
   }
   function startTimer() {
     callStartRef.current = Date.now(); setCallDuration(0);
@@ -288,6 +305,10 @@ export default function AahaasRealtimeV02() {
     if (type === "session.created" || type === "session.updated") {
       addLog("info", type === "session.created" ? "Session ready" : "Session configured");
       setPhase("connected"); setStatusMsg("Connected — speak when ready.");
+      if (type === "session.updated" && !openingSentRef.current) {
+        openingSentRef.current = true;
+        requestResponseCreate();
+      }
       return;
     }
     if (type === "input_audio_buffer.speech_started") {
@@ -305,6 +326,7 @@ export default function AahaasRealtimeV02() {
     }
     if (type === "response.created") {
       stopAllActiveAudio(); // cancel any previous response still playing — prevents overlap
+      responseBusyRef.current = true;
       aiTransBufRef.current = ""; setAiTranscript("");
       setPhase("speaking"); setStatusMsg("Aahaas is speaking..."); return;
     }
@@ -318,6 +340,8 @@ export default function AahaasRealtimeV02() {
       aiTransBufRef.current = ""; addLog("info", "AI said", text.slice(0, 80)); return;
     }
     if (type === "response.done") {
+      responseBusyRef.current = false;
+      flushQueuedResponseCreate();
       setPhase("connected"); setStatusMsg("Connected — speak when ready."); return;
     }
     if (type === "response.output_item.added" && msg.item?.type === "function_call") {
@@ -348,7 +372,7 @@ export default function AahaasRealtimeV02() {
       await executeWhatsApp(call_id, parsed);
     } else {
       sendWs({ type: "conversation.item.create", item: { type: "function_call_output", call_id, output: "Unknown tool." } });
-      sendWs({ type: "response.create" });
+      requestResponseCreate();
     }
   }
 
@@ -429,7 +453,7 @@ export default function AahaasRealtimeV02() {
     if (isSlowAction && holdMusicEnabledRef.current) stopHoldMusic();
 
     sendWs({ type: "conversation.item.create", item: { type: "function_call_output", call_id, output: aiOutput } });
-    sendWs({ type: "response.create" });
+    requestResponseCreate();
     setPhase("speaking");
     setStatusMsg("Aahaas is speaking...");
   }
@@ -467,7 +491,7 @@ export default function AahaasRealtimeV02() {
     }
 
     sendWs({ type: "conversation.item.create", item: { type: "function_call_output", call_id, output } });
-    sendWs({ type: "response.create" });
+    requestResponseCreate();
     setPhase("speaking");
   }
 
@@ -481,6 +505,9 @@ export default function AahaasRealtimeV02() {
     setFetchedPackages([]); setConfirmedPackage(null);
     setQuotationStatus("idle"); setQuotationInfo(null);
     setTerminalLog([]); aiTransBufRef.current = "";
+    responseBusyRef.current = false;
+    queuedResponseRef.current = false;
+    openingSentRef.current = false;
     voiceSessionIdRef.current = null;  // reset session for new call
 
     try {
@@ -563,6 +590,9 @@ export default function AahaasRealtimeV02() {
     setHoldMusicActive(false);
     setDetectedCountry("Sri Lanka"); detectedCountryRef.current = "Sri Lanka";
     voiceSessionIdRef.current = null; activeAudioRef.current = [];
+    responseBusyRef.current = false;
+    queuedResponseRef.current = false;
+    openingSentRef.current = false;
     aiTransBufRef.current = "";
   }
 
