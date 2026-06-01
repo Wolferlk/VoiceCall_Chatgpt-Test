@@ -147,6 +147,10 @@ export default function AahaasRealtimeV02() {
     sendWs({ type: "response.create" });
     responseBusyRef.current = true;
   }
+  function queueFollowupResponse() {
+    queuedResponseRef.current = true;
+    flushQueuedResponseCreate();
+  }
   function flushQueuedResponseCreate() {
     if (!queuedResponseRef.current || responseBusyRef.current) return;
     queuedResponseRef.current = false;
@@ -392,7 +396,7 @@ export default function AahaasRealtimeV02() {
       addLog("warn", "Tool call had no prompt — asking AI to restate");
       sendWs({ type: "conversation.item.create", item: { type: "function_call_output", call_id,
         output: "No customer words were captured this turn. Do NOT change the plan. Politely ask the customer to repeat what they'd like." } });
-      sendWs({ type: "response.create" });
+      queueFollowupResponse();
       setPhase("speaking");
       return;
     }
@@ -475,7 +479,7 @@ export default function AahaasRealtimeV02() {
     if (isSlowAction && holdMusicEnabledRef.current) stopHoldMusic();
 
     sendWs({ type: "conversation.item.create", item: { type: "function_call_output", call_id, output: aiOutput } });
-    requestResponseCreate();
+    queueFollowupResponse();
     setPhase("speaking");
     setStatusMsg("Aahaas is speaking...");
   }
@@ -513,7 +517,7 @@ export default function AahaasRealtimeV02() {
     }
 
     sendWs({ type: "conversation.item.create", item: { type: "function_call_output", call_id, output } });
-    requestResponseCreate();
+    queueFollowupResponse();
     setPhase("speaking");
   }
 

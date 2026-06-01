@@ -28,7 +28,7 @@ Call this tool whenever the customer says ANYTHING about travel. You must:
    new_request   → first travel request, or customer wants a completely new trip
    add_hotel     → customer mentions a specific hotel to add or switch to
    add_product   → customer wants to add an activity / tour / experience
-   change        → customer changes nights, dates, travelers, stars, or removes something
+  change        → customer explicitly changes nights, dates, travelers, stars, or explicitly asks to remove a named item
    price_query   → customer asks about cost, total, or price (INSTANT — no re-plan)
    confirm       → customer says yes / agrees / wants to book
 
@@ -40,7 +40,9 @@ RULES:
 - Use new_request ONLY for the very first request or when the customer clearly wants a
   different trip/destination from scratch. It RESETS the whole plan and clears everything
   already added — so to add a hotel/activity or tweak nights/pax, use add_hotel / add_product /
-  change, NEVER new_request. When unsure between adding and changing, pick "change".
+  change, NEVER new_request. Do not guess removals from vague, partial, or noisy speech.
+  Only pick "change" when the customer clearly states the specific item or trip detail to modify.
+  If the utterance is unclear, ask for a short clarification instead of inventing a change.
 - NEVER invent package details — only speak what the tool returns.
 - Do NOT ask the customer structured questions (destination, nights, etc.) — just let them speak naturally and pass their words to the tool.
 - After price_query or confirm, the tool returns instantly (no hold music needed).
