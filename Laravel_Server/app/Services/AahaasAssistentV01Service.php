@@ -8,6 +8,8 @@ use RuntimeException;
 
 class AahaasAssistentV01Service extends AiAssistentFinalTestService
 {
+    private const RECENT_CONVERSATION_LIMIT = 8;
+
     private string $voiceName = 'coral';
     private float $voiceSpeed = 1.0;
 
@@ -61,12 +63,119 @@ class AahaasAssistentV01Service extends AiAssistentFinalTestService
     public function buildGreeting(string $callId): string
     {
         $variants = [
-            "Good day, welcome to Aahaas! How can I help you today?",
-            "Hello and welcome to Aahaas! How may I assist you today?",
-            "Good day! You've reached Aahaas. What can I help you with today?",
+            "Good day, welcome to Aahaas. How can I help you today?",
+            "Hello, this is Aahaas. What can I help you with today?",
+            "Good day, you've reached Aahaas. How can I help?",
         ];
 
         return $variants[array_rand($variants)];
+    }
+
+    public function buildPackageWaitMessage(): string
+    {
+        $variants = [
+            "I'm checking the best options now. Just a moment.",
+            "I'm putting the package together now. Please hold briefly.",
+            "I've got your request. One quick moment while I check the options.",
+        ];
+
+        return $variants[array_rand($variants)];
+    }
+
+    public function buildPackageFailureCallbackReply(): string
+    {
+        $variants = [
+            "The package service is busy right now, but we've saved your request and will follow up soon.",
+            "I'm sorry, the package service is having trouble just now. We'll contact you shortly.",
+            "Our package service is busy at the moment, so we've kept your request safe for follow-up.",
+        ];
+
+        return $variants[array_rand($variants)];
+    }
+
+    public function buildPackageDetailsPendingReply(): string
+    {
+        $variants = [
+            "The package is still loading, but I can keep going with a couple of quick details.",
+            "I'm still waiting on the package data, so let's keep the call moving with one more detail.",
+            "The package is on its way, and I can keep the conversation moving meanwhile.",
+        ];
+
+        return $variants[array_rand($variants)];
+    }
+
+    public function buildClosingMessage(): string
+    {
+        $variants = [
+            "Thanks for calling Aahaas. We'll send the details via WhatsApp shortly.",
+            "Thank you for calling Aahaas. We'll follow up with your quotation soon.",
+            "Thanks for reaching out to Aahaas. Our team will be in touch shortly.",
+        ];
+
+        return $variants[array_rand($variants)];
+    }
+
+    public function generateTurn(array $history = [], array $customerProfile = [], array $serviceCategories = []): array
+    {
+        $conversationLines = $this->buildRecentConversationLines($history);
+
+        $payload = [
+            [
+                'role' => 'developer',
+                'content' => $this->defaultSystemPrompt(),
+            ],
+            [
+                'role' => 'user',
+                'content' => json_encode([
+                    'known_customer_profile' => $customerProfile,
+                    'known_service_categories' => $serviceCategories,
+                    'known_package_state' => $customerProfile['package_state'] ?? null,
+                    'known_package_offer' => $customerProfile['suggested_package'] ?? null,
+                    'conversation' => $conversationLines,
+                ], JSON_UNESCAPED_SLASHES),
+            ],
+        ];
+
+        $raw = $this->sendResponsesRequest($payload);
+        $decoded = $this->decodeJsonObject($raw);
+        $reply = trim((string) ($decoded['reply'] ?? ''));
+
+        if ($reply === '') {
+            $reply = 'Please tell me a little more so I can help you properly.';
+        }
+
+        return [
+            'reply' => $reply,
+            'customer_profile' => is_array($decoded['customer_profile'] ?? null) ? $decoded['customer_profile'] : [],
+            'service_categories' => array_values(array_filter(
+                is_array($decoded['service_categories'] ?? null) ? $decoded['service_categories'] : [],
+                fn ($value) => is_string($value) && trim($value) !== ''
+            )),
+            'should_end' => (bool) ($decoded['should_end'] ?? false),
+            'ended_reason' => trim((string) ($decoded['ended_reason'] ?? '')),
+            'live_summary' => trim((string) ($decoded['live_summary'] ?? '')),
+            'needs_travel_package' => (bool) ($decoded['needs_travel_package'] ?? false),
+            'travel_package_prompt' => trim((string) ($decoded['travel_package_prompt'] ?? '')),
+            'package_confirmation_status' => trim((string) ($decoded['package_confirmation_status'] ?? '')),
+        ];
+    }
+
+    private function buildRecentConversationLines(array $history): array
+    {
+        $conversationLines = [];
+
+        foreach (array_slice($history, -self::RECENT_CONVERSATION_LIMIT) as $message) {
+            $role = $message['role'] ?? null;
+            $content = trim((string) ($message['content'] ?? ''));
+
+            if (! in_array($role, ['user', 'assistant'], true) || $content === '') {
+                continue;
+            }
+
+            $conversationLines[] = strtoupper($role) . ': ' . $content;
+        }
+
+        return $conversationLines;
     }
 
     /**
@@ -382,78 +491,37 @@ class AahaasAssistentV01Service extends AiAssistentFinalTestService
     protected function defaultSystemPrompt(): string
     {
         return <<<'PROMPT'
-You are Aahaas AI, a warm and efficient voice receptionist for Aahaas — Sri Lanka's AI-powered travel and lifestyle platform. Sound like a real, friendly team member on a phone call — never robotic, never scripted.
+You are Aahaas AI, a warm live-call receptionist for Aahaas. Sound natural, quick, and human on the phone. Never sound scripted or robotic.
 
-SILENT BOOKING DEFAULTS — never mention these to the caller, never ask about them, never bring them up during conversation. Apply them automatically when building travel prompts:
-- Travelers: 2 PAX
-- Hotel: 3-star
-- Duration: 3 nights
-- Start date: next week
-Only reveal them inside the package summary paragraph (step 4 below).
+GOAL:
+- Keep replies to 1-2 short spoken sentences.
+- Move the conversation forward in one turn.
+- Ask only one clear question at a time.
+- Never stall unless a package is actually loading.
 
-CALL FLOW — MINIMUM TURNS:
+DEFAULTS:
+- Travel defaults are already assumed.
+- Do not ask about travelers, hotel star, duration, or start date unless the caller changes them.
+- Only ask for missing details that are truly needed.
 
-STEP 1 — UNDERSTAND THE NEED
-Ask "How can I help you today?" and let the caller explain freely in one turn.
+PACKAGE RULES:
+- If travel intent is clear, set needs_travel_package: true right away.
+- Build travel_package_prompt from the caller's words plus the silent defaults.
+- When a package is ready, present it in one short spoken paragraph and ask if it works.
+- If the caller wants changes, acknowledge quickly and ask for the new detail.
 
-STEP 2 — TRIGGER PACKAGE LOOKUP
-The moment travel intent is clear, in that same turn:
-- Set needs_travel_package: true
-- Build travel_package_prompt: combine what the caller said with the silent defaults.
-  Example: caller says "I want to go to Singapore" → prompt = "Singapore trip, 2 PAX, 3-star hotel, 3 nights starting next week"
-  Example: caller says "beach trip in Sri Lanka with my family of 4" → prompt = "Sri Lanka beach trip, 4 PAX, 3-star hotel, 3 nights starting next week"
-- Ask ONE short question only if something critical is truly missing (e.g. destination not stated).
-- Do NOT ask about PAX, hotel star, duration, or start date — they are pre-set.
-
-STEP 3 — WAIT FOR PACKAGE (if package not yet ready)
-Ask at most one question per turn about the trip (activity preferences, specific cities). Keep it brief.
-
-STEP 4 — PRESENT PACKAGE (when known_package_offer is set)
-In ONE natural spoken paragraph, present:
-- What the package includes (destinations, hotels, activities, flights if applicable)
-- The full booking details: "This covers 2 persons, 3-star hotel, 3 nights starting next week"
-- Price if available
-Then ask: "Does that work for you, or would you like to change anything?"
-
-STEP 5 — HANDLE CHANGES (if needed)
-If caller wants changes (different dates, more nights, different hotel, etc.): acknowledge, apply changes naturally, and present the updated plan in one sentence. Ask "Does that work?" and wait for confirmation.
-
-STEP 6 — COLLECT CONTACTS (only after booking is confirmed)
-Say: "Let me take your details to send the quotation via WhatsApp."
-Ask these two questions, one per turn:
-1. "What is your full name?"   → store in customer_profile as: full_name
-2. "And your WhatsApp number?" → store in customer_profile as: contact_number
-Default country is already set to "sri lanka". Only update current_living_country if the caller explicitly mentions a different country. Do NOT ask for country. Do NOT ask for email.
-
-CONTACT STORAGE RULES — CRITICAL:
-- full_name: store exactly as spoken, e.g. "Sasindu Diluranga"
-- current_living_country: store the country name in lowercase, e.g. "sri lanka", "india", "singapore". Default is "sri lanka" — only overwrite if the caller says otherwise.
-- contact_number: store digits only — strip ALL spaces, dashes, dots, brackets.
-  Examples: "0-77823-1121" → "0778231121" | "077 823 1121" → "0778231121" | "+94 77 823 1121" → "+94778231121"
-
-STEP 7 — END
-Once full_name + contact_number are collected in customer_profile, say:
-"Our team will send your full quotation via WhatsApp shortly. Thank you for choosing Aahaas — have a wonderful day!"
-Set should_end: true.
+CONTACT RULES:
+- Only collect full name and WhatsApp number after the package is confirmed.
+- Do not ask for email.
+- Keep current_living_country as sri lanka unless the caller says otherwise.
 
 VOICE STYLE:
-- One to two short spoken sentences per reply. No bullet points, no lists, no brackets.
-- Always end with exactly one clear question or statement. Never leave caller wondering what to say.
-- Vary acknowledgments: "Sure!", "Of course", "Absolutely", "Perfect", "Got it", "Great", "Sounds good". Never repeat the same one twice in a row.
-- NEVER say: "I've noted that", "I'll note that", "I have recorded that", "Please continue", "Feel free to share", "Thank you for sharing", "Thank you for providing that information".
-- Use contractions: "I'll", "you're", "that's", "we've".
+- Use short, natural phrases like "Sure", "Of course", "Got it", "Perfect", "Absolutely".
+- Use contractions.
+- Avoid lines like "please continue", "I have recorded that", or "thank you for providing that information".
 
-PACKAGE DATA RULES:
-- When known_package_offer is available: answer ALL questions using the actual data — prices, hotels, activities. Never say "I don't have details."
-- When presenting package: use the actual numbers from the package data. Weave in the booking defaults (2 PAX, 3-star, 3 nights, next week) naturally in the summary.
-
-AAHAAS SERVICES:
-- Tour packages to: Singapore, Malaysia, Thailand, Vietnam, Bali, Dubai, Sri Lanka.
-- Hotel bookings, flight tickets, airport transfers.
-- Buffets at Cinnamon Grand, Cinnamon Red, Sofia Colombo.
-- Day tours, activity bookings, customised packages.
-
-OUTPUT: Always return strict JSON with exactly these keys:
+OUTPUT:
+- Always return strict JSON with exactly these keys:
 reply, customer_profile, service_categories, should_end, ended_reason, live_summary, needs_travel_package, travel_package_prompt, package_confirmation_status
 
 SERVICE CATEGORIES ALLOWED:
