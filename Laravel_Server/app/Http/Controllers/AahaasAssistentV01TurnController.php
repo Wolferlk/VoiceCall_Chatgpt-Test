@@ -90,6 +90,7 @@ class AahaasAssistentV01TurnController extends Controller
 
             $turn            = $service->generateTurn($history, $customerProfile, $serviceCategories);
             $mergedProfile   = array_filter(array_merge($customerProfile, $turn['customer_profile']), fn ($v) => $v !== null && $v !== '');
+            $mergedProfile   = $service->normalizeContactFields($mergedProfile);
             $mergedCategories = array_values(array_unique(array_merge($serviceCategories, $turn['service_categories'])));
             $reply           = $turn['reply'];
             $packageState    = trim((string) ($turn['package_confirmation_status'] ?? ''));

@@ -239,9 +239,48 @@ class AahaasAssistentV01Service extends AiAssistentFinalTestService
 
     public function hasQuotationContacts(array $customerProfile): bool
     {
+        $customerProfile = $this->normalizeContactFields($customerProfile);
+
         return trim((string) ($customerProfile['full_name'] ?? ''))              !== ''
             && trim((string) ($customerProfile['current_living_country'] ?? '')) !== ''
             && trim((string) ($customerProfile['contact_number'] ?? ''))         !== '';
+    }
+
+    public function normalizeContactFields(array $customerProfile): array
+    {
+        $contactNumber = trim((string) ($customerProfile['contact_number']
+            ?? $customerProfile['whatsapp_number']
+            ?? $customerProfile['phone_number']
+            ?? $customerProfile['phone']
+            ?? ''));
+
+        $contactNumber = preg_replace('/[^\d+]/', '', $contactNumber) ?? '';
+
+        if (str_starts_with($contactNumber, '+')) {
+            $contactNumber = substr($contactNumber, 1);
+        }
+
+        if (str_starts_with($contactNumber, '00')) {
+            $contactNumber = substr($contactNumber, 2);
+        }
+
+        $customerProfile['contact_number'] = $contactNumber;
+        unset($customerProfile['whatsapp_number'], $customerProfile['phone_number'], $customerProfile['phone']);
+
+        $country = trim((string) (
+            $customerProfile['current_living_country']
+            ?? $customerProfile['detected_country']
+            ?? $customerProfile['country']
+            ?? $customerProfile['country_name']
+            ?? $customerProfile['country_code']
+            ?? ''
+        ));
+
+        if ($country !== '') {
+            $customerProfile['current_living_country'] = strtolower($country);
+        }
+
+        return $customerProfile;
     }
 
     // ── Phone normalisation ───────────────────────────────────────────────────
@@ -514,6 +553,7 @@ CONTACT RULES:
 - Only collect full name and WhatsApp number after the package is confirmed.
 - Do not ask for email.
 - Keep current_living_country as sri lanka unless the caller says otherwise.
+- If the caller says "WhatsApp number", "phone number", or just "number", store it in contact_number.
 
 VOICE STYLE:
 - Use short, natural phrases like "Sure", "Of course", "Got it", "Perfect", "Absolutely".

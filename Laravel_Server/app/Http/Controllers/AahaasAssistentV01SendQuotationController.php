@@ -43,6 +43,8 @@ class AahaasAssistentV01SendQuotationController extends Controller
             ];
         }
 
+        $customerProfile = $service->normalizeContactFields($customerProfile);
+
         try {
             if (! $service->hasQuotationContacts($customerProfile)) {
                 return response()->json([

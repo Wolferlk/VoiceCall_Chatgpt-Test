@@ -2,10 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\SendWhatsAppQuotationJob;
 use App\Models\ServiceCall;
+use App\Services\AahaasAssistentV01Service;
 use App\Services\ElevenLabsReceptionCallService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class AahaasCallApiTest extends TestCase
@@ -112,5 +116,96 @@ class AahaasCallApiTest extends TestCase
             ->assertJsonPath('should_end', false)
             ->assertJsonPath('customer_profile.package_state', 'pending')
             ->assertJsonPath('service_categories.0', 'AI Travel Planning');
+    }
+
+    public function test_aahaas_assistent_v01_send_quotation_accepts_whatsapp_number_alias(): void
+    {
+        Queue::fake();
+
+        $call = ServiceCall::create([
+            'call_id' => 'CALL-V01WA1',
+            'status' => 'completed',
+            'customer_profile' => [
+                'full_name' => 'Sasindu Diluranga',
+                'whatsapp_number' => '+94 77 823 1121',
+                'current_living_country' => 'sri lanka',
+            ],
+            'service_categories' => ['Sri Lanka Tour Planning'],
+            'conversation_history' => [],
+            'latest_report' => 'Customer wants a Sri Lanka trip.',
+            'started_at' => now(),
+            'ended_at' => now(),
+            'ended_reason' => 'completed',
+        ]);
+
+        $response = $this->postJson('/api/aahaas-assistent-v01/send-quotation', [
+            'call_id' => $call->call_id,
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('queued', true);
+
+        Queue::assertPushed(SendWhatsAppQuotationJob::class, function (SendWhatsAppQuotationJob $job): bool {
+            $payload = (new \ReflectionClass($job))->getProperty('customerProfile');
+            $payload->setAccessible(true);
+
+            $customerProfile = $payload->getValue($job);
+
+            return ($customerProfile['contact_number'] ?? '') === '94778231121';
+        });
+    }
+
+    public function test_aahaas_assistent_v01_send_quotation_prefixes_indian_numbers_with_91(): void
+    {
+        Http::fake([
+            'https://travel-parser-live.aahaas.com/v1/voice/send-whatsapp' => Http::response([], 200),
+        ]);
+
+        $service = app(AahaasAssistentV01Service::class);
+
+        $result = $service->sendQuotation(
+            'CALL-V01IN1',
+            [
+                'full_name' => 'Test User',
+                'contact_number' => '0778231121',
+                'current_living_country' => 'india',
+            ],
+            ['summary' => 'Customer wants a quote.'],
+            ['Sri Lanka Tour Planning']
+        );
+
+        $this->assertTrue($result['api_sent']);
+        $this->assertSame('91778231121', $result['wa_id']);
+
+        Http::assertSent(function ($request): bool {
+            $data = $request->data();
+
+            return ($data['waId'] ?? '') === '91778231121';
+        });
+    }
+
+    public function test_aahaas_assistent_v01_session_uses_country_from_ip_header(): void
+    {
+        $this->mock(AahaasAssistentV01Service::class, function ($mock): void {
+            $mock->shouldReceive('setVoiceConfig')->once();
+            $mock->shouldReceive('buildGreeting')->once()->andReturn('Hello from Aahaas.');
+            $mock->shouldReceive('synthesizeSpeech')->once()->andReturn([
+                'body' => 'greeting-audio',
+                'mime_type' => 'audio/mpeg',
+            ]);
+        });
+
+        $response = $this->withHeaders(['CF-IPCountry' => 'IN'])
+            ->postJson('/api/aahaas-assistent-v01/session', [
+                'voice_name' => 'coral',
+                'voice_speed' => 1,
+            ]);
+
+        $response->assertOk();
+
+        $callId = $response->json('call_id');
+        $call = ServiceCall::query()->where('call_id', $callId)->firstOrFail();
+
+        $this->assertSame('india', $call->customer_profile['current_living_country'] ?? '');
     }
 }

@@ -25,6 +25,7 @@ class AahaasAssistentV01SessionController extends Controller
 
         try {
             $service->setVoiceConfig($voiceName, $voiceSpeed);
+            $country = $this->resolveCurrentLivingCountry($request);
 
             $call = ServiceCall::create([
                 'call_id' => 'V01-' . strtoupper(Str::random(10)),
@@ -38,7 +39,7 @@ class AahaasAssistentV01SessionController extends Controller
                     'travel_start_date'      => 'next week',
                     'activities'             => 'any',
                     'travel_purpose'         => 'any',
-                    'current_living_country' => 'sri lanka',
+                    'current_living_country' => $country,
                 ],
                 'service_categories'   => [],
                 'conversation_history' => [],
@@ -71,5 +72,45 @@ class AahaasAssistentV01SessionController extends Controller
                 'message' => $throwable->getMessage() !== '' ? $throwable->getMessage() : 'Aahaas Assistent V01 session could not be started.',
             ], is_int($status) && $status >= 400 && $status < 600 ? $status : 500);
         }
+    }
+
+    private function resolveCurrentLivingCountry(Request $request): string
+    {
+        $headers = [
+            'CF-IPCountry',
+            'X-App-Country-Code',
+            'X-Geo-Country-Code',
+            'X-Country-Code',
+            'X-App-Country',
+            'X-Geo-Country',
+            'X-Country',
+        ];
+
+        foreach ($headers as $header) {
+            $value = trim((string) $request->header($header, ''));
+
+            if ($value === '' || strtoupper($value) === 'XX') {
+                continue;
+            }
+
+            $value = strtolower($value);
+
+            return match ($value) {
+                'lk' => 'sri lanka',
+                'in' => 'india',
+                'us' => 'united states',
+                'gb', 'uk' => 'united kingdom',
+                'ae' => 'united arab emirates',
+                'sg' => 'singapore',
+                'my' => 'malaysia',
+                'au' => 'australia',
+                'ca' => 'canada',
+                'de' => 'germany',
+                'fr' => 'france',
+                default => $value,
+            };
+        }
+
+        return 'sri lanka';
     }
 }

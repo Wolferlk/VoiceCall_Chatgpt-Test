@@ -44,6 +44,7 @@ class AahaasAssistentV01EndController extends Controller
                 array_merge($customerProfile, $report['customer_profile'] ?: []),
                 fn ($v) => $v !== null && $v !== ''
             );
+            $finalProfile = $service->normalizeContactFields($finalProfile);
             $finalCategories = array_values(array_unique(array_merge(
                 $serviceCategories,
                 $report['service_categories'] ?: []
