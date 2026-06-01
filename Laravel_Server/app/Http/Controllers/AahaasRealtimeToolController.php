@@ -9,22 +9,24 @@ use Illuminate\Support\Facades\Log;
 
 class AahaasRealtimeToolController extends Controller
 {
+    // Action types that rebuild the plan (take 20-40 s — hold music should play)
+    private const SLOW_ACTIONS = ['new_request', 'add_hotel', 'add_product', 'change'];
+
+    // Action types that answer instantly from stored state
+    private const FAST_ACTIONS = ['price_query', 'confirm'];
+
     public function __invoke(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'tool'             => ['required', 'string', 'in:fetch_travel_package,send_whatsapp_quotation'],
-            // fetch_travel_package fields
-            'destination'      => ['nullable', 'string', 'max:200'],
-            'travelers'        => ['nullable', 'integer', 'min:1', 'max:100'],
-            'nights'           => ['nullable', 'integer', 'min:1', 'max:365'],
-            'hotel_stars'      => ['nullable', 'integer', 'min:1', 'max:5'],
-            'start_date'       => ['nullable', 'string', 'max:100'],
-            'purpose'          => ['nullable', 'string', 'max:200'],
-            'special_requests' => ['nullable', 'string', 'max:500'],
-            // send_whatsapp_quotation fields
-            'customer_name'    => ['nullable', 'string', 'max:200'],
-            'phone_number'     => ['nullable', 'string', 'max:30'],
-            'package_summary'  => ['nullable', 'string', 'max:3000'],
+            'tool'                  => ['required', 'string', 'in:fetch_travel_package,send_whatsapp_quotation'],
+            // fetch_travel_package
+            'customer_voice_prompt' => ['nullable', 'string', 'max:1000'],
+            'action'                => ['nullable', 'string', 'max:50'],
+            'session_id'            => ['nullable', 'string', 'max:100'],
+            // send_whatsapp_quotation
+            'customer_name'         => ['nullable', 'string', 'max:200'],
+            'phone_number'          => ['nullable', 'string', 'max:30'],
+            'package_summary'       => ['nullable', 'string', 'max:3000'],
         ]);
 
         return match ($validated['tool']) {
@@ -38,77 +40,164 @@ class AahaasRealtimeToolController extends Controller
 
     private function handleFetchTravelPackage(array $args): JsonResponse
     {
-        $destination     = trim((string) ($args['destination']     ?? ''));
-        $travelers       = (int) ($args['travelers']    ?? 2);
-        $nights          = (int) ($args['nights']       ?? 3);
-        $hotelStars      = (int) ($args['hotel_stars']  ?? 3);
-        $startDate       = trim((string) ($args['start_date']     ?? 'next week'));
-        $purpose         = trim((string) ($args['purpose']        ?? ''));
-        $specialRequests = trim((string) ($args['special_requests'] ?? ''));
+        $prompt    = trim((string) ($args['customer_voice_prompt'] ?? ''));
+        $action    = trim((string) ($args['action']    ?? ''));
+        $sessionId = trim((string) ($args['session_id'] ?? ''));
 
-        if ($destination === '') {
-            return response()->json(['success' => false, 'result' => 'Destination is required.']);
+        if ($prompt === '') {
+            return response()->json([
+                'success' => false,
+                'result'  => 'No customer prompt was provided.',
+            ]);
         }
 
-        $prompt = $this->buildPackagePrompt($destination, $travelers, $nights, $hotelStars, $startDate, $purpose, $specialRequests);
+        $payload = ['prompt' => $prompt];
 
-        $suggestUrl = trim((string) env('TRAVEL_PACKAGE_SUGGEST_URL', 'https://travel-parser-live.aahaas.com/v1/voice/suggest'));
+        // Reuse the session from a previous turn so the API keeps cart state
+        if ($sessionId !== '') {
+            $payload['session_id'] = $sessionId;
+        }
+
+        // Pass the action only when it is a known value (skips classifier → faster + deterministic)
+        $validActions = array_merge(self::SLOW_ACTIONS, self::FAST_ACTIONS);
+        if ($action !== '' && in_array($action, $validActions, true)) {
+            $payload['action'] = $action;
+        }
+
+        $suggestUrl = trim((string) env(
+            'TRAVEL_PACKAGE_SUGGEST_URL',
+            'https://travel-parser-live.aahaas.com/v1/voice/suggest'
+        ));
+
+        Log::info('AahaasRealtimeTool: calling suggest API', [
+            'action'     => $action,
+            'session_id' => $sessionId ?: '(new)',
+            'prompt'     => mb_substr($prompt, 0, 120),
+        ]);
 
         try {
-            $response = Http::timeout(90)->asJson()->post($suggestUrl, ['prompt' => $prompt]);
+            $response = Http::timeout(90)->asJson()->post($suggestUrl, $payload);
 
             if (! $response->successful()) {
-                Log::warning('AahaasRealtimeTool: Package API failed', ['status' => $response->status()]);
-                return response()->json(['success' => false, 'result' => 'Package service unavailable. We will follow up via WhatsApp.']);
+                Log::warning('AahaasRealtimeTool: suggest API failed', [
+                    'status' => $response->status(),
+                    'body'   => mb_substr($response->body(), 0, 300),
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'result'  => 'The package service is temporarily unavailable. We will follow up via WhatsApp.',
+                ]);
             }
 
-            $payload = $response->json();
+            $data = $response->json();
 
-            if (! is_array($payload)) {
-                return response()->json(['success' => false, 'result' => 'Unexpected response from package service.']);
+            if (! is_array($data)) {
+                return response()->json([
+                    'success' => false,
+                    'result'  => 'Unexpected response from package service.',
+                ]);
             }
 
-            $voiceText = $this->extractVoiceText($payload);
+            Log::info('AahaasRealtimeTool: suggest OK', [
+                'intent'     => $data['intent'] ?? '',
+                'session_id' => $data['session_id'] ?? '',
+                'total'      => $data['pricing']['grand_total'] ?? null,
+            ]);
 
-            Log::info('AahaasRealtimeTool: Package fetched', ['destination' => $destination]);
+            // Build a rich AI-readable output so the AI can reference pricing and options
+            $aiOutput = $this->buildAiOutput($data);
 
-            return response()->json(['success' => true, 'voice_text' => $voiceText, 'raw' => $payload]);
+            return response()->json([
+                'success'            => true,
+                // Key fields — returned to the client to drive the UI and next turn
+                'session_id'         => $data['session_id']  ?? '',
+                'intent'             => $data['intent']       ?? '',
+                'voice_text'         => $data['voice_text']   ?? '',
+                'destination'        => $data['destination']  ?? '',
+                'currency'           => $data['currency']     ?? 'USD',
+                'hotel'              => $data['hotel']        ?? null,
+                'products'           => $data['products']     ?? [],
+                'pricing'            => $data['pricing']      ?? null,
+                'additional_options' => $data['additional_options'] ?? [],
+                'meta'               => $data['meta']         ?? [],
+                // This is what the AI receives back inside the conversation context
+                'ai_output'          => $aiOutput,
+            ]);
         } catch (\Throwable $e) {
-            Log::error('AahaasRealtimeTool: Package exception', ['message' => $e->getMessage()]);
-            return response()->json(['success' => false, 'result' => 'Package service unreachable. We will follow up via WhatsApp.']);
+            Log::error('AahaasRealtimeTool: suggest exception', ['message' => $e->getMessage()]);
+            return response()->json([
+                'success' => false,
+                'result'  => 'Package service unreachable. We will follow up via WhatsApp.',
+            ]);
         }
     }
 
-    private function buildPackagePrompt(
-        string $destination, int $travelers, int $nights, int $hotelStars,
-        string $startDate, string $purpose, string $specialRequests
-    ): string {
-        $parts = [
-            "Travel package request: {$travelers} traveler(s) to {$destination}.",
-            "{$nights} nights, {$hotelStars}-star hotel, starting {$startDate}.",
-        ];
-        if ($purpose !== '')          $parts[] = "Purpose: {$purpose}.";
-        if ($specialRequests !== '')  $parts[] = "Special requests: {$specialRequests}.";
-        return implode(' ', $parts);
-    }
-
-    private function extractVoiceText(array $payload): string
+    /**
+     * Build a concise text block the AI receives as the tool result.
+     * It can then reference exact prices and options in its spoken reply.
+     */
+    private function buildAiOutput(array $data): string
     {
-        foreach (['voice_text', 'summary', 'description', 'reply', 'message'] as $key) {
-            $text = trim((string) ($payload[$key] ?? ''));
-            if ($text !== '') return $text;
+        $parts   = [];
+        $cur     = $data['currency'] ?? 'USD';
+        $intent  = $data['intent'] ?? '';
+
+        // 1. The TTS-ready line (speak this)
+        $voiceText = trim((string) ($data['voice_text'] ?? ''));
+        if ($voiceText !== '') {
+            $parts[] = "SPEAK THIS: {$voiceText}";
         }
-        foreach (['package', 'result', 'data'] as $key) {
-            $sub = $payload[$key] ?? null;
-            if (is_string($sub) && trim($sub) !== '') return trim($sub);
-            if (is_array($sub)) {
-                foreach (['voice_text', 'summary', 'description'] as $sk) {
-                    $t = trim((string) ($sub[$sk] ?? ''));
-                    if ($t !== '') return $t;
-                }
+
+        // 2. Exact pricing
+        $pricing = $data['pricing'] ?? null;
+        if (is_array($pricing) && isset($pricing['grand_total'])) {
+            $src    = $pricing['source'] === 'cart' ? 'EXACT' : 'estimate';
+            $total  = number_format((float) $pricing['grand_total'], 2);
+            $pcur   = $pricing['currency'] ?? $cur;
+            $parts[] = "Grand total ({$src}): {$pcur} {$total}";
+
+            if (isset($pricing['hotels_total']) && $pricing['hotels_total'] > 0) {
+                $parts[] = "  Hotel: {$pcur} " . number_format((float) $pricing['hotels_total'], 2);
+            }
+            if (isset($pricing['activities_total']) && $pricing['activities_total'] > 0) {
+                $parts[] = "  Activities: {$pcur} " . number_format((float) $pricing['activities_total'], 2);
             }
         }
-        return 'A package has been prepared. We will send the details via WhatsApp shortly.';
+
+        // 3. Included itinerary items
+        $products = $data['products'] ?? [];
+        if (! empty($products)) {
+            $parts[] = "Included in package:";
+            foreach (array_slice($products, 0, 5) as $p) {
+                $name  = $p['name']  ?? 'Item';
+                $type  = $p['type']  ?? '';
+                $total = isset($p['total_amount']) ? number_format((float) $p['total_amount'], 2) : null;
+                $line  = "  - {$name} ({$type})";
+                if ($total !== null) $line .= " — {$cur} {$total}";
+                $parts[] = $line;
+            }
+        }
+
+        // 4. Additional options to upsell
+        $options = $data['additional_options'] ?? [];
+        if (! empty($options)) {
+            $parts[] = "Could also offer (not yet added):";
+            foreach (array_slice($options, 0, 4) as $o) {
+                $name  = $o['name'] ?? 'Option';
+                $price = isset($o['indicative_price']) ? number_format((float) $o['indicative_price'], 2) : null;
+                $oCur  = $o['currency'] ?? $cur;
+                $line  = "  + {$name}";
+                if ($price !== null) $line .= " (~{$oCur} {$price}/approx)";
+                $parts[] = $line;
+            }
+        }
+
+        // 5. Intent context
+        if ($intent !== '') {
+            $parts[] = "Action taken: {$intent}";
+        }
+
+        return implode("\n", $parts);
     }
 
     // ── WhatsApp quotation ────────────────────────────────────────────────────
@@ -116,16 +205,14 @@ class AahaasRealtimeToolController extends Controller
     private function handleSendWhatsApp(array $args): JsonResponse
     {
         $customerName   = trim((string) ($args['customer_name']   ?? ''));
-        $phoneNumber    = trim((string) ($args['phone_number']    ?? ''));  // already normalised by client
+        $phoneNumber    = trim((string) ($args['phone_number']    ?? ''));
         $packageSummary = trim((string) ($args['package_summary'] ?? ''));
 
         if ($phoneNumber === '' || $customerName === '') {
             return response()->json(['success' => false, 'result' => 'Name and phone number are required.']);
         }
 
-        // Use just first name for the greeting
-        $firstName = explode(' ', $customerName)[0];
-
+        $firstName   = explode(' ', $customerName)[0];
         $whatsappUrl = trim((string) env('AAHAAS_WHATSAPP_SEND_URL', 'https://travel-parser-live.aahaas.com/v1/voice/send-whatsapp'));
 
         try {
@@ -143,11 +230,20 @@ class AahaasRealtimeToolController extends Controller
                 ]);
             }
 
-            Log::warning('AahaasRealtimeTool: WhatsApp failed', ['status' => $response->status(), 'body' => substr($response->body(), 0, 200)]);
-            return response()->json(['success' => false, 'result' => 'Could not send WhatsApp right now. Our team will follow up shortly.']);
+            Log::warning('AahaasRealtimeTool: WhatsApp failed', [
+                'status' => $response->status(),
+                'body'   => mb_substr($response->body(), 0, 200),
+            ]);
+            return response()->json([
+                'success' => false,
+                'result'  => 'Could not send WhatsApp right now. Our team will follow up shortly.',
+            ]);
         } catch (\Throwable $e) {
             Log::error('AahaasRealtimeTool: WhatsApp exception', ['message' => $e->getMessage()]);
-            return response()->json(['success' => false, 'result' => 'WhatsApp sending failed. We will follow up manually.']);
+            return response()->json([
+                'success' => false,
+                'result'  => 'WhatsApp sending failed. We will follow up manually.',
+            ]);
         }
     }
 }

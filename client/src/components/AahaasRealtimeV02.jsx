@@ -84,6 +84,8 @@ export default function AahaasRealtimeV02() {
   const [quotationStatus, setQuotationStatus]   = useState("idle"); // idle|sending|sent|failed
   const [quotationInfo, setQuotationInfo]       = useState(null);   // {name, phone}
   const [holdMusicEnabled, setHoldMusicEnabled] = useState(true);
+  const [holdMusicVolume, setHoldMusicVolume]   = useState(0.28); // 0-1
+  const [holdMusicActive, setHoldMusicActive]   = useState(false); // true while music plays
   const [terminalLog, setTerminalLog]           = useState([]);
   const [callDuration, setCallDuration]         = useState(0);
   const [micLevel, setMicLevel]                 = useState(0);
@@ -102,6 +104,9 @@ export default function AahaasRealtimeV02() {
   const aiTransBufRef      = useRef("");
   const detectedCountryRef   = useRef("Sri Lanka");
   const holdMusicEnabledRef  = useRef(true);
+  const holdMusicVolumeRef   = useRef(0.28);
+  const voiceSessionIdRef    = useRef(null);   // persists the vs_... session across turns
+  const activeAudioRef       = useRef([]);     // all live AudioBufferSourceNodes (for overlap fix)
   // Hold music refs
   const holdBufRef           = useRef(null);
   const holdGainRef        = useRef(null);
@@ -110,6 +115,7 @@ export default function AahaasRealtimeV02() {
   useEffect(() => { phaseRef.current = phase; }, [phase]);
   useEffect(() => { detectedCountryRef.current = detectedCountry; }, [detectedCountry]);
   useEffect(() => { holdMusicEnabledRef.current = holdMusicEnabled; }, [holdMusicEnabled]);
+  useEffect(() => { holdMusicVolumeRef.current = holdMusicVolume; }, [holdMusicVolume]);
   useEffect(() => { if (terminalEndRef.current) terminalEndRef.current.scrollIntoView({ behavior: "smooth" }); }, [terminalLog]);
   useEffect(() => () => teardown(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -164,9 +170,10 @@ export default function AahaasRealtimeV02() {
     const buf = holdBufRef.current;
     if (!ctx || !buf || holdGainRef.current) return;
 
+    const targetVol = Math.max(0.001, holdMusicVolumeRef.current);
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0.001, ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.28, ctx.currentTime + 2.5); // fade in 2.5 s
+    gain.gain.linearRampToValueAtTime(targetVol, ctx.currentTime + 2.5);
     gain.connect(ctx.destination);
     holdGainRef.current = gain;
 
@@ -176,7 +183,8 @@ export default function AahaasRealtimeV02() {
     src.connect(gain);
     src.start(0);
     holdSourceRef.current = src;
-    addLog("info", "Hold music started");
+    setHoldMusicActive(true);
+    addLog("info", `Hold music started (vol ${Math.round(targetVol * 100)}%)`);
   }
 
   function stopHoldMusic() {
@@ -187,14 +195,24 @@ export default function AahaasRealtimeV02() {
     const now = ctx.currentTime;
     gain.gain.cancelScheduledValues(now);
     gain.gain.setValueAtTime(Math.max(gain.gain.value, 0.001), now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 2.5); // fade out 2.5 s
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 2.5);
 
     setTimeout(() => {
       try { holdSourceRef.current?.stop(); } catch {}
       holdSourceRef.current = null;
       holdGainRef.current   = null;
+      setHoldMusicActive(false);
     }, 2600);
     addLog("info", "Hold music fading out");
+  }
+
+  // Fix 4: stop all in-flight AI audio so a new response never overlaps the old one
+  function stopAllActiveAudio() {
+    for (const src of activeAudioRef.current) {
+      try { src.stop(0); } catch {}
+    }
+    activeAudioRef.current  = [];
+    nextPlayTimeRef.current = 0;
   }
 
   // ── Mic capture ───────────────────────────────────────────────────────────
@@ -228,7 +246,7 @@ export default function AahaasRealtimeV02() {
     await preloadHoldMusic();
   }
 
-  // ── PCM16 playback ────────────────────────────────────────────────────────
+  // ── PCM16 playback — tracks every source so stopAllActiveAudio can cancel them ──
   function playAudioDelta(b64) {
     const ctx = audioCtxRef.current;
     if (!ctx) return;
@@ -238,10 +256,17 @@ export default function AahaasRealtimeV02() {
     const buf = ctx.createBuffer(1, f32.length, 24000);
     buf.copyToChannel(f32, 0);
     const src = ctx.createBufferSource();
-    src.buffer = buf; src.connect(ctx.destination);
+    src.buffer = buf;
+    src.connect(ctx.destination);
     const at = Math.max(nextPlayTimeRef.current, ctx.currentTime + 0.02);
     src.start(at);
     nextPlayTimeRef.current = at + buf.duration;
+    // Track so we can stop it on interruption
+    activeAudioRef.current.push(src);
+    src.onended = () => {
+      const i = activeAudioRef.current.indexOf(src);
+      if (i !== -1) activeAudioRef.current.splice(i, 1);
+    };
   }
 
   // ── Teardown ──────────────────────────────────────────────────────────────
@@ -266,8 +291,9 @@ export default function AahaasRealtimeV02() {
       return;
     }
     if (type === "input_audio_buffer.speech_started") {
+      stopAllActiveAudio(); // user interrupted — cancel AI audio immediately
       setPhase("listening"); setStatusMsg("Listening...");
-      addLog("state", "User speaking"); nextPlayTimeRef.current = 0; return;
+      addLog("state", "User speaking"); return;
     }
     if (type === "input_audio_buffer.speech_stopped") {
       setPhase("connected"); setStatusMsg("Processing..."); addLog("state", "Processing"); return;
@@ -278,6 +304,7 @@ export default function AahaasRealtimeV02() {
       addLog("info", "You said", text.slice(0, 80)); return;
     }
     if (type === "response.created") {
+      stopAllActiveAudio(); // cancel any previous response still playing — prevents overlap
       aiTransBufRef.current = ""; setAiTranscript("");
       setPhase("speaking"); setStatusMsg("Aahaas is speaking..."); return;
     }
@@ -326,44 +353,85 @@ export default function AahaasRealtimeV02() {
   }
 
   async function executePackageFetch(call_id, args) {
-    setPhase("searching"); setStatusMsg("Searching for the best package...");
-    setPackageStatus("loading"); addLog("api-start", "→ Searching packages");
-    if (holdMusicEnabledRef.current) startHoldMusic(); // ← fade in only if enabled
+    const { customer_voice_prompt = "", action = "new_request" } = args;
+
+    // Fast actions (price_query, confirm) don't rebuild — no hold music needed
+    const isSlowAction = !["price_query", "confirm"].includes(action);
+
+    setPhase("searching");
+    setStatusMsg(isSlowAction ? "Searching packages... 🎵" : "Checking price...");
+    setPackageStatus("loading");
+    addLog("api-start", `→ fetch_travel_package [${action}]`, customer_voice_prompt.slice(0, 60));
+
+    if (isSlowAction && holdMusicEnabledRef.current) startHoldMusic();
+
+    const payload = {
+      tool: "fetch_travel_package",
+      customer_voice_prompt,
+      action,
+    };
+    // Automatically include session_id if we have one (maintains cart state)
+    if (voiceSessionIdRef.current) payload.session_id = voiceSessionIdRef.current;
 
     const t0 = Date.now();
-    let output = "Package service unavailable. We will follow up via WhatsApp.";
+    let aiOutput = "Package service unavailable. We will follow up via WhatsApp.";
 
     try {
       const res  = await fetch(`${LARAVEL_API}/aahaas-realtime/tool`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tool: "fetch_travel_package", ...args }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json().catch(() => ({}));
-      addLog(res.ok ? "api-ok" : "api-err", `${res.ok ? "✓" : "✗"} Package — ${msToDisplay(Date.now() - t0)}`);
+      addLog(res.ok ? "api-ok" : "api-err",
+        `${res.ok ? "✓" : "✗"} [${action}] — ${msToDisplay(Date.now() - t0)}`);
 
-      if (data.success && data.voice_text) {
-        output = data.voice_text;
+      if (data.success) {
+        // Save session_id for subsequent turns — this is how the API maintains cart state
+        if (data.session_id) {
+          voiceSessionIdRef.current = data.session_id;
+          addLog("info", `Session: ${data.session_id}`);
+        }
+
         setPackageStatus("ready");
-        setPackageText(data.voice_text);
-        // Accumulate every fetch as a numbered entry
+        setPackageText(data.voice_text || "");
+
+        // Accumulate every fetch as a structured numbered entry
         setFetchedPackages((prev) => [
           ...prev,
-          { id: prev.length + 1, text: data.voice_text, ts: new Date().toLocaleTimeString() },
+          {
+            id:                 prev.length + 1,
+            ts:                 new Date().toLocaleTimeString(),
+            intent:             data.intent || action,
+            voice_text:         data.voice_text || "",
+            destination:        data.destination || "",
+            currency:           data.currency || "USD",
+            hotel:              data.hotel || null,
+            products:           data.products || [],
+            pricing:            data.pricing || null,
+            additional_options: data.additional_options || [],
+          },
         ]);
-        addLog("info", "Package ready", data.voice_text.slice(0, 80));
+
+        // The ai_output is a rich text block the AI reads — includes exact prices + upsell options
+        aiOutput = data.ai_output || data.voice_text || "Package found.";
+        addLog("info", "Package ready", (data.voice_text || "").slice(0, 80));
       } else {
-        output = data.result || output; setPackageStatus("failed");
+        aiOutput = data.result || aiOutput;
+        setPackageStatus("failed");
+        addLog("warn", "Package failed", data.result);
       }
     } catch (e) {
-      addLog("api-err", `Package error: ${e.message}`); setPackageStatus("failed");
+      addLog("api-err", `Package error: ${e.message}`);
+      setPackageStatus("failed");
     }
 
-    if (holdMusicEnabledRef.current) stopHoldMusic(); // ← fade out only if enabled
+    if (isSlowAction && holdMusicEnabledRef.current) stopHoldMusic();
 
-    sendWs({ type: "conversation.item.create", item: { type: "function_call_output", call_id, output } });
+    sendWs({ type: "conversation.item.create", item: { type: "function_call_output", call_id, output: aiOutput } });
     sendWs({ type: "response.create" });
-    setPhase("speaking"); setStatusMsg("Aahaas is presenting the package...");
+    setPhase("speaking");
+    setStatusMsg("Aahaas is speaking...");
   }
 
   async function executeWhatsApp(call_id, args) {
@@ -413,6 +481,7 @@ export default function AahaasRealtimeV02() {
     setFetchedPackages([]); setConfirmedPackage(null);
     setQuotationStatus("idle"); setQuotationInfo(null);
     setTerminalLog([]); aiTransBufRef.current = "";
+    voiceSessionIdRef.current = null;  // reset session for new call
 
     try {
       const country = await detectCountry();
@@ -447,7 +516,42 @@ export default function AahaasRealtimeV02() {
     }
   }
 
-  function handleDisconnect() { addLog("state", "Disconnecting"); teardown(); setPhase("completed"); setStatusMsg("Session ended."); stopTimer(); }
+  async function saveSession(endedReason = "completed") {
+    try {
+      const lastPkg = fetchedPackages[fetchedPackages.length - 1] || null;
+      await fetch(`${LARAVEL_API}/aahaas-realtime/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversation:      conversation,
+          packages:          fetchedPackages,
+          customer_name:     quotationInfo?.name     || "",
+          customer_phone:    quotationInfo?.phone    || "",
+          country:           detectedCountryRef.current,
+          voice_session_id:  voiceSessionIdRef.current || "",
+          confirmed_package: confirmedPackage || "",
+          total_amount:      lastPkg?.pricing?.grand_total || null,
+          currency:          lastPkg?.currency || "",
+          quotation_sent:    quotationStatus === "sent",
+          call_duration_ms:  callDuration,
+          ended_reason:      endedReason,
+          started_at:        callStartRef.current ? new Date(callStartRef.current).toISOString() : null,
+        }),
+      });
+      addLog("api-ok", "✓ Session saved to database");
+    } catch (e) {
+      addLog("api-err", `Session save failed: ${e.message}`);
+    }
+  }
+
+  function handleDisconnect() {
+    addLog("state", "Disconnecting");
+    saveSession("manual_hangup");
+    teardown();
+    setPhase("completed");
+    setStatusMsg("Session ended.");
+    stopTimer();
+  }
 
   function handleReset() {
     teardown(); setPhase("idle"); setError(""); setStatusMsg("Ready to connect.");
@@ -456,7 +560,9 @@ export default function AahaasRealtimeV02() {
     setFetchedPackages([]); setConfirmedPackage(null);
     setQuotationStatus("idle"); setQuotationInfo(null);
     setTerminalLog([]); setCallDuration(0); setMicLevel(0);
+    setHoldMusicActive(false);
     setDetectedCountry("Sri Lanka"); detectedCountryRef.current = "Sri Lanka";
+    voiceSessionIdRef.current = null; activeAudioRef.current = [];
     aiTransBufRef.current = "";
   }
 
@@ -517,25 +623,57 @@ export default function AahaasRealtimeV02() {
             </select>
           </div>
 
-          {/* Hold music toggle */}
+          {/* Hold music — toggle + volume + live level bar */}
           <div style={card}>
-            <span style={kicker}>Background Music</span>
-            <div
-              onClick={() => setHoldMusicEnabled((p) => !p)}
-              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", borderRadius: 10, cursor: "pointer", background: holdMusicEnabled ? "rgba(245,158,11,0.08)" : "rgba(100,116,139,0.07)", border: `1px solid ${holdMusicEnabled ? "rgba(245,158,11,0.3)" : "rgba(100,116,139,0.2)"}`, transition: "all 0.18s" }}
-            >
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 700, color: holdMusicEnabled ? "#d97706" : "#64748b" }}>
-                  🎵 {holdMusicEnabled ? "Music ON" : "Music OFF"}
-                </div>
-                <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>
-                  {holdMusicEnabled ? "Plays while searching" : "Silent during search"}
-                </div>
-              </div>
-              <div style={{ width: 38, height: 22, borderRadius: 11, background: holdMusicEnabled ? "#f59e0b" : "#cbd5e1", position: "relative", transition: "background 0.18s", flexShrink: 0 }}>
-                <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: holdMusicEnabled ? 18 : 2, transition: "left 0.18s", boxShadow: "0 1px 4px rgba(0,0,0,0.2)" }} />
+            <span style={kicker}>Search Hold Music</span>
+
+            {/* Toggle row */}
+            <div onClick={() => setHoldMusicEnabled((p) => !p)}
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 10px", borderRadius: 9, cursor: "pointer", marginBottom: 10, background: holdMusicEnabled ? "rgba(245,158,11,0.07)" : "rgba(100,116,139,0.06)", border: `1px solid ${holdMusicEnabled ? "rgba(245,158,11,0.25)" : "rgba(100,116,139,0.18)"}`, transition: "all 0.18s" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: holdMusicEnabled ? "#d97706" : "#64748b" }}>
+                🎵 {holdMusicEnabled ? "Enabled" : "Disabled"}
+              </span>
+              <div style={{ width: 36, height: 20, borderRadius: 10, background: holdMusicEnabled ? "#f59e0b" : "#cbd5e1", position: "relative", transition: "background 0.18s", flexShrink: 0 }}>
+                <div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: holdMusicEnabled ? 18 : 2, transition: "left 0.18s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
               </div>
             </div>
+
+            {/* Live level bar — shows activity when music is playing */}
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                <span style={{ fontSize: 10, color: "#64748b" }}>Level</span>
+                <span style={{ fontSize: 10, fontWeight: 700, color: holdMusicActive ? "#f59e0b" : "#94a3b8" }}>
+                  {holdMusicActive ? "▶ Playing" : "Silent"}
+                </span>
+              </div>
+              <div style={{ height: 6, borderRadius: 4, background: "#e2e8f0", overflow: "hidden" }}>
+                <div style={{
+                  height: "100%", borderRadius: 4,
+                  width: holdMusicActive ? `${Math.round(holdMusicVolume * 100)}%` : "0%",
+                  background: "linear-gradient(90deg,#f59e0b,#d97706)",
+                  transition: "width 0.4s ease",
+                }} />
+              </div>
+            </div>
+
+            {/* Volume slider */}
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                <span style={{ fontSize: 10, color: "#64748b" }}>Volume</span>
+                <span style={{ fontSize: 10, fontWeight: 700, color: "#f59e0b" }}>{Math.round(holdMusicVolume * 100)}%</span>
+              </div>
+              <input type="range" min={0.01} max={1} step={0.01} value={holdMusicVolume}
+                onChange={(e) => setHoldMusicVolume(parseFloat(e.target.value))}
+                style={{ width: "100%", accentColor: "#f59e0b", cursor: "pointer" }} />
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2 }}>
+                <span style={{ fontSize: 9, color: "#94a3b8" }}>Quiet</span>
+                <span style={{ fontSize: 9, color: "#94a3b8" }}>Loud</span>
+              </div>
+            </div>
+
+            <p style={{ fontSize: 10, color: "#94a3b8", margin: "6px 0 0", lineHeight: 1.5 }}>
+              Plays only during package search (slow actions). Price checks are instant — no music.
+            </p>
           </div>
 
           {/* Mic sensitivity */}
@@ -634,33 +772,93 @@ export default function AahaasRealtimeV02() {
             </div>
           </div>
 
-          {/* ── Fetched packages list ── */}
+          {/* ── Package search results (structured, numbered per turn) ── */}
           <div style={{ ...card, padding: 0, overflow: "hidden" }}>
             <div style={{ padding: "10px 16px", borderBottom: "1px solid rgba(15,23,42,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div>
-                <span style={{ ...kicker, marginBottom: 0 }}>Package Search Results</span>
-              </div>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "#1e293b" }}>Package Results</span>
               <span style={{ fontSize: 11, fontWeight: 700, color: pkgColor, background: `${pkgColor}15`, padding: "3px 10px", borderRadius: 20, border: `1px solid ${pkgColor}30` }}>
-                {packageStatus === "loading" ? "🎵 Searching..." : fetchedPackages.length > 0 ? `${fetchedPackages.length} result${fetchedPackages.length > 1 ? "s" : ""}` : pkgLabel}
+                {packageStatus === "loading" ? "🎵 Searching..." : fetchedPackages.length > 0 ? `${fetchedPackages.length} turn${fetchedPackages.length > 1 ? "s" : ""}` : pkgLabel}
               </span>
             </div>
-            <div style={{ maxHeight: 280, overflowY: "auto", padding: fetchedPackages.length === 0 ? "12px 16px" : "8px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ maxHeight: 400, overflowY: "auto", padding: "10px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
               {fetchedPackages.length === 0 ? (
                 <p style={{ fontSize: 12, color: "#94a3b8", margin: 0 }}>
-                  {packageStatus === "loading" ? "🎵 Hold music is playing while we find the best options..." : "Package results will appear here as they are fetched."}
+                  {packageStatus === "loading" ? "🎵 Hold music playing while we build your package..." : "Results appear here as the conversation progresses."}
                 </p>
               ) : (
-                fetchedPackages.map((pkg) => (
-                  <div key={pkg.id} style={{ border: "1px solid rgba(99,102,241,0.2)", borderRadius: 10, overflow: "hidden" }}>
-                    <div style={{ background: "rgba(99,102,241,0.06)", padding: "6px 12px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "#6366f1" }}>Option {pkg.id}</span>
-                      <span style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>{pkg.ts}</span>
+                fetchedPackages.map((pkg) => {
+                  const intentColors = {
+                    new_request: "#6366f1", add_hotel: "#3b82f6", add_product: "#10b981",
+                    change: "#f59e0b", price_query: "#8b5cf6", confirm: "#10b981",
+                  };
+                  const ic = intentColors[pkg.intent] || "#94a3b8";
+                  return (
+                    <div key={pkg.id} style={{ border: "1px solid rgba(99,102,241,0.18)", borderRadius: 12, overflow: "hidden" }}>
+                      {/* Header */}
+                      <div style={{ background: "rgba(99,102,241,0.05)", padding: "7px 12px", display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 12, fontWeight: 800, color: "#6366f1" }}>#{pkg.id}</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: ic, background: `${ic}18`, padding: "2px 8px", borderRadius: 10, border: `1px solid ${ic}35` }}>
+                          {pkg.intent?.replace("_", " ").toUpperCase()}
+                        </span>
+                        {pkg.destination && <span style={{ fontSize: 11, color: "#475569", fontWeight: 600 }}>📍 {pkg.destination}</span>}
+                        <span style={{ marginLeft: "auto", fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>{pkg.ts}</span>
+                      </div>
+
+                      <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+                        {/* Voice text summary */}
+                        <p style={{ fontSize: 12, color: "#1e293b", margin: 0, lineHeight: 1.65 }}>{pkg.voice_text}</p>
+
+                        {/* Included products */}
+                        {pkg.products?.length > 0 && (
+                          <div>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>Included</div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                              {pkg.products.map((p, i) => (
+                                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "3px 8px", background: "rgba(15,23,42,0.03)", borderRadius: 6 }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 0 }}>
+                                    <span style={{ fontSize: 9, fontWeight: 700, color: "#fff", background: "#6366f1", padding: "1px 5px", borderRadius: 4, flexShrink: 0 }}>{p.type}</span>
+                                    <span style={{ fontSize: 11, color: "#1e293b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                                  </div>
+                                  {p.total_amount && (
+                                    <span style={{ fontSize: 11, fontWeight: 700, color: "#1e293b", flexShrink: 0, marginLeft: 8 }}>
+                                      {pkg.currency} {Number(p.total_amount).toFixed(0)}
+                                    </span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Grand total */}
+                        {pkg.pricing?.grand_total && (
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 10px", background: "rgba(99,102,241,0.07)", borderRadius: 8, border: "1px solid rgba(99,102,241,0.15)" }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: "#6366f1" }}>
+                              Grand Total {pkg.pricing.source === "cart" ? "(exact)" : "(estimate)"}
+                            </span>
+                            <span style={{ fontSize: 14, fontWeight: 800, color: "#6366f1" }}>
+                              {pkg.pricing.currency || pkg.currency} {Number(pkg.pricing.grand_total).toLocaleString()}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Additional options (upsell) */}
+                        {pkg.additional_options?.length > 0 && (
+                          <div>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>Could also add</div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                              {pkg.additional_options.slice(0, 5).map((o, i) => (
+                                <span key={i} style={{ fontSize: 10, color: "#64748b", background: "rgba(100,116,139,0.08)", border: "1px solid rgba(100,116,139,0.18)", padding: "3px 8px", borderRadius: 20 }}>
+                                  {o.name} {o.indicative_price ? `~${o.currency || pkg.currency} ${Number(o.indicative_price).toFixed(0)}` : ""}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    <div style={{ padding: "10px 12px" }}>
-                      <p style={{ fontSize: 12, color: "#1e293b", margin: 0, lineHeight: 1.65 }}>{pkg.text}</p>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>

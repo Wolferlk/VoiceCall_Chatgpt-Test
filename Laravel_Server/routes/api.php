@@ -31,6 +31,7 @@ use App\Http\Controllers\AahaasAssistentV01AmbientMusicController;
 use App\Http\Controllers\AahaasAssistentV01SendQuotationController;
 use App\Http\Controllers\AahaasRealtimeSessionController;
 use App\Http\Controllers\AahaasRealtimeToolController;
+use App\Http\Controllers\AahaasRealtimeSaveController;
 use App\Http\Controllers\FiveVChatGptAssisEndController;
 use App\Http\Controllers\FiveVChatGptAssisHoldMusicController;
 use App\Http\Controllers\FiveVChatGptAssisPackagePrefetchController;
@@ -120,8 +121,10 @@ Route::post('/aahaas-assistent-v01/send-quotation', AahaasAssistentV01SendQuotat
 Route::options('/aahaas-assistent-v01/send-quotation', fn () => response('', 204));
 Route::post('/aahaas-realtime/session', AahaasRealtimeSessionController::class);
 Route::post('/aahaas-realtime/tool', AahaasRealtimeToolController::class);
+Route::post('/aahaas-realtime/save', AahaasRealtimeSaveController::class);
 Route::options('/aahaas-realtime/session', fn () => response('', 204));
 Route::options('/aahaas-realtime/tool', fn () => response('', 204));
+Route::options('/aahaas-realtime/save', fn () => response('', 204));
 Route::get('/aahaas-chatgpt-3v/hold-music', AahaasChatGpt3vHoldMusicController::class);
 Route::post('/aahaas-chatgpt-3v/session', AahaasChatGpt3vSessionController::class);
 Route::post('/aahaas-chatgpt-3v/turn', AahaasChatGpt3vTurnController::class);
