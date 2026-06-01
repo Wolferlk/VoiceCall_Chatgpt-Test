@@ -127,7 +127,7 @@ function buildSessionUpdate(voice = "coral", country = "Sri Lanka") {
             // model never took a turn and the tool never fired. 0.5 is the balanced default.
             threshold:           0.5,
             prefix_padding_ms:   300,
-            silence_duration_ms: 800,
+            silence_duration_ms: 1000,
             create_response:     true,
           },
           transcription: { model: "gpt-realtime-whisper" },
