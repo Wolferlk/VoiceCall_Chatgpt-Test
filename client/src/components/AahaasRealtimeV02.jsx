@@ -42,7 +42,7 @@ function msToDisplay(ms) { return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed
 
 // Keep the mic muted for a short tail after the AI's last audio chunk finishes, so
 // the speaker echo of its final words doesn't leak back and trigger a false turn.
-const AI_ECHO_TAIL_SEC = 0.8;
+const AI_ECHO_TAIL_SEC = 0.35;
 
 // Actions the /v1/voice/suggest API understands. Anything outside this set is
 // dropped from the payload so the API classifies the turn itself — we never
@@ -482,9 +482,11 @@ export default function AahaasRealtimeV02() {
       // itself. When it's the caller's turn we stream the full mic and let the
       // server's noise_reduction + semantic_vad handle background noise.
       const ctx = audioCtxRef.current;
-      const aiBusyPhase = ["speaking", "searching", "sending_wa"].includes(phaseRef.current);
+      const aiBusyPhase = ["searching", "sending_wa"].includes(phaseRef.current);
       const aiAudioTail = ctx && ctx.currentTime < nextPlayTimeRef.current + AI_ECHO_TAIL_SEC;
-      const muteMic     = responseBusyRef.current || aiBusyPhase || aiAudioTail;
+      // Keep the mic open during assistant speech so the caller can barge in naturally.
+      // Only suppress input during hold-music/processing phases and the short tail after playback.
+      const muteMic     = aiBusyPhase || aiAudioTail;
 
       const pcm = muteMic ? new Int16Array(f32.length) : float32ToPcm16(f32);
       wsRef.current.send(JSON.stringify({ type: "input_audio_buffer.append", audio: bufToBase64(pcm.buffer) }));
