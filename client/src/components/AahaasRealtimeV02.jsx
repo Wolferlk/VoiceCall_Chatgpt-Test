@@ -475,7 +475,7 @@ export default function AahaasRealtimeV02() {
       // itself. When it's the caller's turn we stream the full mic and let the
       // server's noise_reduction + semantic_vad handle background noise.
       const ctx = audioCtxRef.current;
-      const aiBusyPhase = ["searching", "sending_wa"].includes(phaseRef.current);
+      const aiBusyPhase = ["speaking", "searching", "sending_wa"].includes(phaseRef.current);
       const aiAudioTail = ctx && ctx.currentTime < nextPlayTimeRef.current + AI_ECHO_TAIL_SEC;
       // Keep the mic open during assistant speech so the caller can barge in naturally.
       // Only suppress input during hold-music/processing phases and the short tail after playback.
@@ -599,10 +599,48 @@ export default function AahaasRealtimeV02() {
       await executePackageFetch(call_id, parsed);
     } else if (name === "send_whatsapp_quotation") {
       await executeWhatsApp(call_id, parsed);
+    } else if (name === "search_products") {
+      await executeSearch(call_id, parsed);
     } else {
       sendWs({ type: "conversation.item.create", item: { type: "function_call_output", call_id, output: "Unknown tool." } });
       requestResponseCreate();
     }
+  }
+
+  // Read-only catalogue lookup (transfers / tours). Returns real options + ids to
+  // the model so it can read a couple aloud and then add one via product_ids.
+  async function executeSearch(call_id, args) {
+    const query = String(args.query ?? "").trim();
+    const type  = String(args.type ?? "any").trim() || "any";
+    const city  = String(args.city ?? "").trim();
+
+    setStatusMsg("Checking our catalogue...");
+    addLog("api-start", `→ search_products [${type}]`, query || city || "");
+
+    let aiOutput = "Product search is unavailable right now — apologise briefly and offer to follow up; do NOT tell the customer to arrange their own.";
+    try {
+      const body = { tool: "search_products", type };
+      if (query) body.query = query;
+      if (city)  body.city  = city;
+      if (voiceSessionIdRef.current) body.session_id = voiceSessionIdRef.current;
+
+      const res  = await fetch(`${LARAVEL_API}/aahaas-realtime/tool`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      aiOutput = data.ai_output || aiOutput;
+      const n = Array.isArray(data.results) ? data.results.length : 0;
+      addLog(res.ok ? "api-ok" : "api-err", `${res.ok ? "✓" : "✗"} search — ${n} result${n === 1 ? "" : "s"}`);
+    } catch (e) {
+      addLog("api-err", `Search error: ${e.message}`);
+    }
+
+    sendWs({ type: "conversation.item.create", item: { type: "function_call_output", call_id, output: aiOutput } });
+    queueFollowupResponse();
+    setPhase("speaking");
+    setStatusMsg("Aahaas is speaking...");
   }
 
   async function executePackageFetch(call_id, args) {
@@ -655,6 +693,11 @@ export default function AahaasRealtimeV02() {
     // "change" turn isn't left to free-text guessing. Only forward a non-empty object.
     if (args.details && typeof args.details === "object" && Object.keys(args.details).length > 0) {
       payload.details = args.details;
+    }
+    // Explicit product picks from a prior search_products result — add EXACTLY these.
+    if (Array.isArray(args.product_ids)) {
+      const ids = args.product_ids.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+      if (ids.length > 0) payload.product_ids = ids;
     }
     // Automatically include session_id if we have one (maintains cart state)
     if (voiceSessionIdRef.current) payload.session_id = voiceSessionIdRef.current;

@@ -20,6 +20,7 @@ CORE BEHAVIOR:
 - When the caller gives a clear full sentence, mirror the full intent back in a natural human way before moving to the next step.
 - Never reduce a complete request into a single label in your spoken reply. For example, "I want to travel Sri Lanka" should be treated as a complete request, not just "Sri Lanka".
 - If the transcript is garbled, incomplete, or low-confidence, do not infer a destination or package from it. Ask the caller to repeat the request instead of guessing.
+- If the caller's speech overlaps the assistant or the transcript is incomplete, do not turn the fragment into a travel request. Wait for a clean turn or ask them to repeat it.
 
 OPENING:
 - On the first turn, open with exactly: "Hello, this is Aahaas. How can I help today?"
@@ -72,6 +73,20 @@ RULES:
 - NEVER invent package details — only speak what the tool returns.
 - Do NOT ask the customer structured questions (destination, nights, etc.) — just let them speak naturally and pass their words to the tool.
 - After price_query or confirm, the tool returns instantly (no hold music needed).
+
+════════════════════════════════════════
+TRANSFERS & PRODUCT AVAILABILITY — search_products
+════════════════════════════════════════
+Aahaas DOES provide transfers (airport pickups/drop-offs AND point-to-point/sightseeing
+transfers) and a large catalogue of tours. So:
+- NEVER tell the customer to "arrange your own transfer" or that we don't have something.
+- When the customer asks whether we have a transfer or a specific product ("do you have
+  airport transfers?", "any transfer from the airport?", "what Sentosa tours do you have?"),
+  call search_products (use type=airport_transfer for airport runs, type=transfer for
+  point-to-point/sightseeing, otherwise a keyword query).
+- Read back one or two real options with their approximate price.
+- If the customer picks one, call fetch_travel_package with action=add_product and
+  product_ids set to the chosen option's id(s) — this adds exactly that product.
 
 ════════════════════════════════════════
 AFTER THE CUSTOMER CONFIRMS THE PACKAGE
@@ -145,8 +160,47 @@ const REALTIME_TOOLS = [
             notes:        { type: "string",  description: "Any other concrete preference (board basis, room type, etc.)." },
           },
         },
+        product_ids: {
+          type: "array",
+          items: { type: "integer" },
+          description:
+            "When the customer picked specific product(s) from a previous search_products result, pass " +
+            "their numeric ids here to add EXACTLY those products. Use action=add_product and still set " +
+            "customer_voice_prompt to what they said.",
+        },
       },
       required: ["customer_voice_prompt", "action"],
+    },
+  },
+  {
+    type: "function",
+    name: "search_products",
+    description:
+      "Search Aahaas's LIVE catalogue for real products, tours, and TRANSFERS when the customer asks whether " +
+      "something is available — e.g. 'do you have airport transfers?', 'any point-to-point transfers?', " +
+      "'what Sentosa tours do you have?'. Aahaas DOES provide transfers, so NEVER tell the customer to arrange " +
+      "their own — call this instead. Returns real options with ids + indicative prices. Read a couple aloud, " +
+      "then add the chosen one with fetch_travel_package using product_ids.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Free-text keywords, e.g. 'Sentosa tour', 'whale watching'. Optional for the transfer types.",
+        },
+        type: {
+          type: "string",
+          enum: ["any", "airport_transfer", "transfer", "sightseeing_transfer"],
+          description:
+            "Narrow the search. airport_transfer = airport pickup/drop-off; transfer / sightseeing_transfer = " +
+            "point-to-point or sightseeing transfers; any = general keyword search.",
+        },
+        city: {
+          type: "string",
+          description: "City to search in, if the customer named one. Otherwise omit — the trip's destination is used.",
+        },
+      },
+      required: [],
     },
   },
   {

@@ -18,7 +18,7 @@ class AahaasRealtimeToolController extends Controller
     public function __invoke(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'tool'                  => ['required', 'string', 'in:fetch_travel_package,send_whatsapp_quotation'],
+            'tool'                  => ['required', 'string', 'in:fetch_travel_package,send_whatsapp_quotation,search_products'],
             // fetch_travel_package
             'customer_voice_prompt' => ['nullable', 'string', 'max:1000'],
             'action'                => ['nullable', 'string', 'max:50'],
@@ -28,6 +28,13 @@ class AahaasRealtimeToolController extends Controller
             // done in composeCanonicalPrompt so a single malformed slot can never 422
             // the whole turn (a failed package fetch mid-call is worse than a dropped slot).
             'details'               => ['nullable', 'array'],
+            // Explicit product picks chosen from a search_products result (add-by-id).
+            'product_ids'           => ['nullable', 'array', 'max:20'],
+            'product_ids.*'         => ['integer'],
+            // search_products
+            'query'                 => ['nullable', 'string', 'max:200'],
+            'type'                  => ['nullable', 'string', 'max:40'],
+            'city'                  => ['nullable', 'string', 'max:120'],
             // send_whatsapp_quotation
             'customer_name'         => ['nullable', 'string', 'max:200'],
             'phone_number'          => ['nullable', 'string', 'max:30'],
@@ -37,6 +44,7 @@ class AahaasRealtimeToolController extends Controller
         return match ($validated['tool']) {
             'fetch_travel_package'    => $this->handleFetchTravelPackage($validated),
             'send_whatsapp_quotation' => $this->handleSendWhatsApp($validated),
+            'search_products'         => $this->handleSearchProducts($validated),
             default                   => response()->json(['message' => 'Unknown tool.'], 400),
         };
     }
@@ -45,10 +53,21 @@ class AahaasRealtimeToolController extends Controller
 
     private function handleFetchTravelPackage(array $args): JsonResponse
     {
-        $prompt    = trim((string) ($args['customer_voice_prompt'] ?? ''));
-        $action    = trim((string) ($args['action']    ?? ''));
-        $sessionId = trim((string) ($args['session_id'] ?? ''));
-        $details   = is_array($args['details'] ?? null) ? $args['details'] : [];
+        $prompt     = trim((string) ($args['customer_voice_prompt'] ?? ''));
+        $action     = trim((string) ($args['action']    ?? ''));
+        $sessionId  = trim((string) ($args['session_id'] ?? ''));
+        $details    = is_array($args['details'] ?? null) ? $args['details'] : [];
+        // Explicit product picks (add-by-id) — keep positive ints only.
+        $productIds = array_values(array_filter(
+            array_map('intval', is_array($args['product_ids'] ?? null) ? $args['product_ids'] : []),
+            static fn ($id) => $id > 0,
+        ));
+
+        // A pick-only add may carry no spoken prompt — synthesise a minimal one so
+        // downstream prompt-composition still has text to work with.
+        if ($prompt === '' && $productIds !== []) {
+            $prompt = 'add the selected option';
+        }
 
         if ($prompt === '') {
             return response()->json([
@@ -73,6 +92,11 @@ class AahaasRealtimeToolController extends Controller
         $validActions = array_merge(self::SLOW_ACTIONS, self::FAST_ACTIONS);
         if ($action !== '' && in_array($action, $validActions, true)) {
             $payload['action'] = $action;
+        }
+
+        // Forward explicit product picks so the suggest API adds exactly those.
+        if ($productIds !== []) {
+            $payload['product_ids'] = $productIds;
         }
 
         $suggestUrl = trim((string) env(
@@ -142,6 +166,85 @@ class AahaasRealtimeToolController extends Controller
                 'result'  => 'Package service unreachable. We will follow up via WhatsApp.',
             ]);
         }
+    }
+
+    // ── Product / transfer search (read-only catalogue lookup) ────────────────
+
+    private function handleSearchProducts(array $args): JsonResponse
+    {
+        $query     = trim((string) ($args['query'] ?? ''));
+        $type      = trim((string) ($args['type']  ?? 'any'));
+        $city      = trim((string) ($args['city']  ?? ''));
+        $sessionId = trim((string) ($args['session_id'] ?? ''));
+
+        $payload = ['type' => $type !== '' ? $type : 'any'];
+        if ($query !== '')     $payload['query']      = $query;
+        if ($city !== '')      $payload['city']       = $city;
+        if ($sessionId !== '') $payload['session_id'] = $sessionId;
+
+        $searchUrl = trim((string) env(
+            'TRAVEL_PACKAGE_SEARCH_URL',
+            'https://travel-parser-live.aahaas.com/v1/voice/search'
+        ));
+
+        Log::info('AahaasRealtimeTool: calling search API', [
+            'type'       => $type,
+            'query'      => mb_substr($query, 0, 80),
+            'city'       => $city,
+            'session_id' => $sessionId ?: '(none)',
+        ]);
+
+        try {
+            $response = Http::timeout(30)->asJson()->post($searchUrl, $payload);
+
+            if (! $response->successful()) {
+                return response()->json([
+                    'success'   => false,
+                    'results'   => [],
+                    'ai_output' => 'The product search is temporarily unavailable. Apologise briefly and offer to follow up via WhatsApp — do NOT say we do not offer it.',
+                ]);
+            }
+
+            $data    = $response->json();
+            $results = is_array($data['results'] ?? null) ? $data['results'] : [];
+
+            return response()->json([
+                'success'   => true,
+                'results'   => $results,
+                'ai_output' => $this->buildSearchAiOutput($results),
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('AahaasRealtimeTool: search exception', ['message' => $e->getMessage()]);
+            return response()->json([
+                'success'   => false,
+                'results'   => [],
+                'ai_output' => 'The product search did not respond. Apologise briefly and offer to follow up — do NOT tell the customer to arrange their own.',
+            ]);
+        }
+    }
+
+    /**
+     * Text block the AI receives after a search — real options with ids so it can
+     * read a couple aloud and then add the chosen one via product_ids.
+     */
+    private function buildSearchAiOutput(array $results): string
+    {
+        if ($results === []) {
+            return 'No matching products came back. Tell the customer you will confirm availability with the team and follow up — do NOT say we do not offer it or that they should arrange their own.';
+        }
+
+        $lines = ['Found these REAL options. Read one or two aloud with the approximate price. To add one, call fetch_travel_package with action=add_product and product_ids=[that id]:'];
+        foreach (array_slice($results, 0, 6) as $r) {
+            $id    = $r['id']   ?? '?';
+            $name  = $r['name'] ?? 'Option';
+            $cur   = $r['currency'] ?? '';
+            $price = isset($r['indicative_price']) ? number_format((float) $r['indicative_price'], 2) : null;
+            $line  = "  - id {$id}: {$name}";
+            if ($price !== null) $line .= " (~{$cur} {$price})";
+            $lines[] = $line;
+        }
+
+        return implode("\n", $lines);
     }
 
     /**
