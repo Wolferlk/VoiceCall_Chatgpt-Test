@@ -161,6 +161,7 @@ export default function AahaasRealtimeV02() {
   const micMutedRef          = useRef(false);
   const voiceSessionIdRef    = useRef(null);   // persists the vs_... session across turns
   const activeAudioRef       = useRef([]);     // all live AudioBufferSourceNodes (for overlap fix)
+  const whatsappSentRef      = useRef(false);  // true only after send_whatsapp_quotation succeeds
   // Hold music refs
   const holdBufRef           = useRef(null);
   const holdGainRef        = useRef(null);
@@ -619,7 +620,12 @@ export default function AahaasRealtimeV02() {
       setAiTranscript(text); if (text) pushMessage("assistant", text);
       aiTransBufRef.current = ""; addLog("info", "AI said", text.slice(0, 80));
       if (normalizeTextForCompare(text).includes("thanks for calling aahaas") || normalizeTextForCompare(text).includes("thank you for calling aahaas")) {
-        autoEndReasonRef.current = "assistant_closing";
+        // Only close if WhatsApp was actually sent. If not, the farewell phrase
+        // appeared prematurely (e.g. while still collecting name/number) — do not
+        // close the call; let the quotation flow complete first.
+        if (whatsappSentRef.current) {
+          autoEndReasonRef.current = "assistant_closing";
+        }
       }
       return;
     }
@@ -907,6 +913,7 @@ export default function AahaasRealtimeV02() {
       if (data.success) {
         output = data.result; setQuotationStatus("sent");
         setQuotationInfo({ name: customer_name, phone: waId, sent: true });
+        whatsappSentRef.current = true;
         autoEndReasonRef.current = "quotation_sent";
         addLog("api-ok", `✓ WhatsApp sent to ${customer_name}`);
       } else {
@@ -951,6 +958,7 @@ export default function AahaasRealtimeV02() {
     queuedResponseRef.current = false;
     openingSentRef.current = false;
     autoEndReasonRef.current = "";
+    whatsappSentRef.current = false;
     clearAutoEndTimer();
     setErrorReportMessage("");
     setErrorReportTitle("Realtime Test Report");
@@ -1049,6 +1057,7 @@ export default function AahaasRealtimeV02() {
     queuedResponseRef.current = false;
     openingSentRef.current = false;
     autoEndReasonRef.current = "";
+    whatsappSentRef.current = false;
     clearAutoEndTimer();
     aiTransBufRef.current = "";
     setErrorReportMessage("");
