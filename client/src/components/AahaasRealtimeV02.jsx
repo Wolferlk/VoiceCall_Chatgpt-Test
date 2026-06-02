@@ -510,11 +510,11 @@ export default function AahaasRealtimeV02() {
       // itself. When it's the caller's turn we stream the full mic and let the
       // server's noise_reduction + semantic_vad handle background noise.
       const ctx = audioCtxRef.current;
-      const aiBusyPhase = ["searching", "sending_wa"].includes(phaseRef.current);
+      const aiBusyPhase = ["speaking", "searching", "sending_wa"].includes(phaseRef.current);
       const aiAudioTail = ctx && ctx.currentTime < nextPlayTimeRef.current + AI_ECHO_TAIL_SEC;
-      // Keep the mic open during assistant speech so the caller can barge in naturally.
-      // Only suppress input during hold-music/processing phases and the short tail after playback.
-      const muteMic     = aiBusyPhase || aiAudioTail;
+      // Keep the mic muted while the assistant is speaking so playback does not leak
+      // back into the model and break the response on hosted deployments.
+      const muteMic     = responseBusyRef.current || aiBusyPhase || aiAudioTail;
 
       const pcm = muteMic ? new Int16Array(f32.length) : float32ToPcm16(f32);
       wsRef.current.send(JSON.stringify({ type: "input_audio_buffer.append", audio: bufToBase64(pcm.buffer) }));
