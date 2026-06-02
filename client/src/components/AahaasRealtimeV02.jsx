@@ -149,6 +149,8 @@ export default function AahaasRealtimeV02() {
   const lastUserTranscriptRef = useRef("");
   const responseBusyRef    = useRef(false);
   const queuedResponseRef  = useRef(false);
+  const autoEndReasonRef   = useRef("");
+  const autoEndTimerRef    = useRef(null);
   const openingSentRef     = useRef(false);
   const sessionEpochRef    = useRef(0);
   const detectedCountryRef   = useRef("Sri Lanka");
@@ -234,6 +236,38 @@ export default function AahaasRealtimeV02() {
     callTimerRef.current = setInterval(() => setCallDuration(Date.now() - callStartRef.current), 500);
   }
   function stopTimer() { if (callTimerRef.current) { clearInterval(callTimerRef.current); callTimerRef.current = null; } }
+
+  function clearAutoEndTimer() {
+    if (autoEndTimerRef.current) {
+      clearTimeout(autoEndTimerRef.current);
+      autoEndTimerRef.current = null;
+    }
+  }
+
+  function isEndCallTranscript(text) {
+    const normalized = normalizeTextForCompare(text);
+    if (!normalized) return false;
+    return /\b(end call|end the call|hang up|hangup|goodbye|bye|close the call|stop the call|terminate call|call end)\b/.test(normalized);
+  }
+
+  function scheduleAutoDisconnect(reason, delayMs = 600) {
+    autoEndReasonRef.current = reason;
+    clearAutoEndTimer();
+    autoEndTimerRef.current = setTimeout(() => {
+      autoEndTimerRef.current = null;
+      handleDisconnect(reason);
+    }, Math.max(0, delayMs));
+  }
+
+  function finishCallNow(reason) {
+    clearAutoEndTimer();
+    stopAllActiveAudio();
+    stopHoldMusic();
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      try { wsRef.current.send(JSON.stringify({ type: "response.cancel" })); } catch {}
+    }
+    handleDisconnect(reason);
+  }
 
   // ── Country detection via IP ───────────────────────────────────────────────
   async function detectCountry() {
@@ -526,6 +560,7 @@ export default function AahaasRealtimeV02() {
   // ── Teardown ──────────────────────────────────────────────────────────────
   function teardown() {
     stopTimer(); stopHoldMusic();
+    clearAutoEndTimer();
     if (processorRef.current) { processorRef.current.disconnect(); processorRef.current = null; }
     micStreamRef.current?.getTracks().forEach((t) => t.stop()); micStreamRef.current = null;
     if (audioCtxRef.current?.state !== "closed") audioCtxRef.current?.close();
@@ -561,7 +596,13 @@ export default function AahaasRealtimeV02() {
       const text = msg.transcript || "";
       lastUserTranscriptRef.current = text;
       setUserTranscript(text); if (text) pushMessage("user", text);
-      addLog("info", "You said", text.slice(0, 80)); return;
+      addLog("info", "You said", text.slice(0, 80));
+      if (isEndCallTranscript(text)) {
+        addLog("state", "Caller requested end call");
+        finishCallNow("caller_requested_end");
+        return;
+      }
+      return;
     }
     if (type === "response.created") {
       stopAllActiveAudio(); // cancel any previous response still playing — prevents overlap
@@ -576,10 +617,21 @@ export default function AahaasRealtimeV02() {
     if (type === "response.output_audio_transcript.done") {
       const text = msg.transcript || aiTransBufRef.current;
       setAiTranscript(text); if (text) pushMessage("assistant", text);
-      aiTransBufRef.current = ""; addLog("info", "AI said", text.slice(0, 80)); return;
+      aiTransBufRef.current = ""; addLog("info", "AI said", text.slice(0, 80));
+      if (normalizeTextForCompare(text).includes("thanks for calling aahaas") || normalizeTextForCompare(text).includes("thank you for calling aahaas")) {
+        autoEndReasonRef.current = "assistant_closing";
+      }
+      return;
     }
     if (type === "response.done") {
       responseBusyRef.current = false;
+      if (autoEndReasonRef.current) {
+        queuedResponseRef.current = false;
+        const ctx = audioCtxRef.current;
+        const waitMs = ctx ? Math.max(450, Math.ceil(Math.max(0, nextPlayTimeRef.current - ctx.currentTime) * 1000) + 120) : 700;
+        scheduleAutoDisconnect(autoEndReasonRef.current, waitMs);
+        return;
+      }
       flushQueuedResponseCreate();
       setPhase("connected"); setStatusMsg("Connected — speak when ready."); return;
     }
@@ -811,10 +863,17 @@ export default function AahaasRealtimeV02() {
     const requestEpoch = sessionEpochRef.current;
     const { customer_name = "", phone_number = "", package_summary = "" } = args;
     const waId = normalizePhone(phone_number, detectedCountryRef.current);
+    const correctedSummary = String(
+      package_summary ||
+      confirmedPackage ||
+      packageText ||
+      fetchedPackages[fetchedPackages.length - 1]?.voice_text ||
+      ""
+    ).trim();
 
     setPhase("sending_wa"); setQuotationStatus("sending");
     setQuotationInfo({ name: customer_name, phone: waId, sent: false });
-    setConfirmedPackage(package_summary);           // store for display
+    setConfirmedPackage(correctedSummary);          // store for display
     setStatusMsg("Sending WhatsApp quotation...");
     addLog("api-start", `→ WhatsApp to ${customer_name} (${waId})`);
 
@@ -824,7 +883,7 @@ export default function AahaasRealtimeV02() {
       const res  = await fetch(`${LARAVEL_API}/aahaas-realtime/tool`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tool: "send_whatsapp_quotation", customer_name, phone_number: waId, package_summary }),
+        body: JSON.stringify({ tool: "send_whatsapp_quotation", customer_name, phone_number: waId, package_summary: correctedSummary }),
       });
       const data = await res.json().catch(() => ({}));
 
@@ -838,7 +897,7 @@ export default function AahaasRealtimeV02() {
           type: "send_whatsapp",
           timestamp: new Date().toLocaleTimeString(),
           endpoint: "send_whatsapp_quotation",
-          request: { customer_name, phone_number: waId, package_summary },
+          request: { customer_name, phone_number: waId, package_summary: correctedSummary },
           response: data,
           status: res.ok ? "success" : "error",
           statusCode: res.status,
@@ -848,13 +907,16 @@ export default function AahaasRealtimeV02() {
       if (data.success) {
         output = data.result; setQuotationStatus("sent");
         setQuotationInfo({ name: customer_name, phone: waId, sent: true });
+        autoEndReasonRef.current = "quotation_sent";
         addLog("api-ok", `✓ WhatsApp sent to ${customer_name}`);
       } else {
         output = data.result || output; setQuotationStatus("failed");
+        autoEndReasonRef.current = "";
         addLog("api-err", `WhatsApp failed: ${data.result}`);
       }
     } catch (e) {
       setQuotationStatus("failed"); addLog("api-err", `WhatsApp error: ${e.message}`);
+      autoEndReasonRef.current = "";
       setApiResponses((prev) => [
         ...prev,
         {
@@ -862,7 +924,7 @@ export default function AahaasRealtimeV02() {
           type: "send_whatsapp",
           timestamp: new Date().toLocaleTimeString(),
           endpoint: "send_whatsapp_quotation",
-          request: { customer_name, phone_number: waId, package_summary },
+          request: { customer_name, phone_number: waId, package_summary: correctedSummary },
           response: { error: e.message },
           status: "error",
           statusCode: 0,
@@ -888,6 +950,8 @@ export default function AahaasRealtimeV02() {
     responseBusyRef.current = false;
     queuedResponseRef.current = false;
     openingSentRef.current = false;
+    autoEndReasonRef.current = "";
+    clearAutoEndTimer();
     setErrorReportMessage("");
     setErrorReportTitle("Realtime Test Report");
     setErrorReportSeverity("medium");
@@ -956,12 +1020,14 @@ export default function AahaasRealtimeV02() {
     }
   }
 
-  function handleDisconnect() {
+  function handleDisconnect(endedReason = "manual_hangup") {
     addLog("state", "Disconnecting");
     const sessionIdSnapshot = voiceSessionIdRef.current || "";
+    clearAutoEndTimer();
+    autoEndReasonRef.current = "";
     sessionEpochRef.current += 1;
     voiceSessionIdRef.current = null;
-    saveSession("manual_hangup", sessionIdSnapshot);
+    saveSession(endedReason, sessionIdSnapshot);
     teardown();
     setPhase("completed");
     setStatusMsg("Session ended.");
@@ -982,6 +1048,8 @@ export default function AahaasRealtimeV02() {
     responseBusyRef.current = false;
     queuedResponseRef.current = false;
     openingSentRef.current = false;
+    autoEndReasonRef.current = "";
+    clearAutoEndTimer();
     aiTransBufRef.current = "";
     setErrorReportMessage("");
     setErrorReportTitle("Realtime Test Report");
