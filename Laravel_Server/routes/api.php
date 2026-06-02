@@ -125,7 +125,6 @@ Route::post('/aahaas-realtime/tool', AahaasRealtimeToolController::class);
 Route::post('/aahaas-realtime/save', AahaasRealtimeSaveController::class);
 Route::get('/aahaas-realtime/error-reports', [AahaasRealtimeErrorDatasetController::class, 'index']);
 Route::post('/aahaas-realtime/error-reports', [AahaasRealtimeErrorDatasetController::class, 'store']);
-Route::post('/aahaas-realtime/error-reports/export', [AahaasRealtimeErrorDatasetController::class, 'export']);
 Route::get('/aahaas-realtime/error-reports/download', [AahaasRealtimeErrorDatasetController::class, 'downloadAll']);
 Route::delete('/aahaas-realtime/error-reports', [AahaasRealtimeErrorDatasetController::class, 'destroyAll']);
 Route::match(['get', 'post'], '/aahaas-realtime/error-dataset/{fileName?}', AahaasRealtimeErrorDatasetController::class)
@@ -134,7 +133,6 @@ Route::options('/aahaas-realtime/session', fn () => response('', 204));
 Route::options('/aahaas-realtime/tool', fn () => response('', 204));
 Route::options('/aahaas-realtime/save', fn () => response('', 204));
 Route::options('/aahaas-realtime/error-reports', fn () => response('', 204));
-Route::options('/aahaas-realtime/error-reports/export', fn () => response('', 204));
 Route::options('/aahaas-realtime/error-reports/download', fn () => response('', 204));
 Route::options('/aahaas-realtime/error-dataset/{fileName?}', fn () => response('', 204))
     ->where('fileName', '[A-Za-z0-9_.-]+');
