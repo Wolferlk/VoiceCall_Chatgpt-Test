@@ -7,11 +7,11 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
-use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class AahaasRealtimeErrorDatasetController extends Controller
 {
     private const DATA_DIR = 'app/aahaas-realtime/error-datasets';
+    private const LOCAL_DOWNLOAD_DIR = 'TestErrorDetails';
 
     public function __invoke(Request $request, ?string $fileName = null): JsonResponse
     {
@@ -86,20 +86,32 @@ class AahaasRealtimeErrorDatasetController extends Controller
         ]);
     }
 
-    public function downloadAll(): StreamedResponse
+    public function downloadAll(): JsonResponse
     {
         $reports = ErrorReport::query()->oldest('created_at')->get();
-        $payload = $reports->map(fn (ErrorReport $report): array => $this->buildFilePayload($report, $report->export_file_name ?: 'error-report.json'))->values()->all();
+        $payload = [
+            'file_name' => 'error-reports.json',
+            'saved_at' => now()->toIso8601String(),
+            'count' => $reports->count(),
+            'reports' => $reports->map(fn (ErrorReport $report): array => $this->buildFilePayload($report, $report->export_file_name ?: 'error-report.json'))->values()->all(),
+        ];
 
-        $fileName = 'error-reports-all.json';
+        $dir = base_path(self::LOCAL_DOWNLOAD_DIR);
+        if (! File::exists($dir)) {
+            File::makeDirectory($dir, 0755, true);
+        }
 
-        return response()->streamDownload(
-            static function () use ($payload): void {
-                echo json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-            },
-            $fileName,
-            ['Content-Type' => 'application/json']
-        );
+        $fileName = 'error-reports.json';
+        $filePath = $dir . DIRECTORY_SEPARATOR . $fileName;
+        File::put($filePath, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+        return response()->json([
+            'success' => true,
+            'file_name' => $fileName,
+            'saved_path' => $filePath,
+            'count' => $reports->count(),
+            'payload' => $payload,
+        ]);
     }
 
     public function destroyAll(): JsonResponse

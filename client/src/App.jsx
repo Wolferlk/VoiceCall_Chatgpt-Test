@@ -8,6 +8,7 @@ import AssistenUvindu from "./components/Assisten_Uvindu";
 import ApiTestPage from "./components/ApiTestPage";
 import PhoneApiTestPage from "./components/PhoneApiTestPage";
 import ChatbotPage from "./components/ChatbotPage";
+import ErrorTestReportPage from "./components/ErrorTestReportPage";
 import FiveVChatGptAssis from "./components/FiveVChatGptAssis";
 import FourVChatGptAssis from "./components/FourVChatGptAssis";
 import RecordsPage from "./components/RecordsPage";
@@ -141,6 +142,7 @@ function pageFromHash(hash) {
   if (hash === "#/chatbot")   return "chatbot";
   if (hash === "#/apitest")   return "apitest";
   if (hash === "#/phonetest") return "phonetest";
+  if (hash === "#/error-reports") return "errorreports";
   return "workspace";
 }
 
@@ -493,7 +495,7 @@ export default function App() {
   }
 
   function navigateTo(nextPage) {
-    const hashMap = { records: "#/records", chatbot: "#/chatbot", apitest: "#/apitest", phonetest: "#/phonetest" };
+    const hashMap = { records: "#/records", chatbot: "#/chatbot", apitest: "#/apitest", phonetest: "#/phonetest", errorreports: "#/error-reports" };
     const nextHash = hashMap[nextPage] || "#/";
     if (typeof window !== "undefined" && window.location.hash !== nextHash) {
       window.location.hash = nextHash;
@@ -737,6 +739,7 @@ export default function App() {
     { id: "workspace",  label: "Voice Workspace",  icon: "🎙" },
     { id: "chatbot",    label: "Chatbot",           icon: "🤖" },
     { id: "records",    label: "Stored Records",    icon: "🗄" },
+    { id: "errorreports", label: "Error Reports",   icon: "⚠" },
     { id: "apitest",    label: "API Test Lab",      icon: "⚡" },
     { id: "phonetest",  label: "Phone API Test",    icon: "📞" },
   ];
@@ -800,6 +803,8 @@ export default function App() {
           <RecordsPage />
         ) : page === "chatbot" ? (
           <ChatbotPage />
+        ) : page === "errorreports" ? (
+          <ErrorTestReportPage />
         ) : page === "apitest" ? (
           <ApiTestPage />
         ) : page === "phonetest" ? (

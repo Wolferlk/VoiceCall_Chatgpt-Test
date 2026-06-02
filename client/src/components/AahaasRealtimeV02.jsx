@@ -123,7 +123,6 @@ export default function AahaasRealtimeV02() {
   const [errorReportMessage, setErrorReportMessage] = useState("");
   const [errorReports, setErrorReports]         = useState([]);
   const [errorReportsLoading, setErrorReportsLoading] = useState(false);
-  const [errorDatasetSaving, setErrorDatasetSaving]   = useState(false);
   const [errorReportsTab, setErrorReportsTab]   = useState("form"); // form|reports
   const [selectedErrorReportIndex, setSelectedErrorReportIndex] = useState(0);
   const [downloadAllSaving, setDownloadAllSaving] = useState(false);
@@ -309,19 +308,6 @@ export default function AahaasRealtimeV02() {
     voiceSessionIdRef.current = null;
   }
 
-  function openJsonInNewTab(payload, fileName = "error-report.json") {
-    if (typeof window === "undefined") return;
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const win = window.open(url, "_blank", "noopener,noreferrer");
-    if (!win) {
-      URL.revokeObjectURL(url);
-      return;
-    }
-    win.document.title = fileName;
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
-  }
-
   function downloadJsonFile(payload, fileName = "download.json") {
     if (typeof window === "undefined") return;
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -384,9 +370,6 @@ export default function AahaasRealtimeV02() {
       setErrorReportDetails("");
       setErrorReportsTab("reports");
       setSelectedErrorReportIndex(0);
-      if (data.report) {
-        openJsonInNewTab(data.report, `${data.report.report_id || "error-report"}.json`);
-      }
     } catch (err) {
       setErrorReportMessage(err.message || "Could not save error dataset.");
     } finally {
@@ -408,29 +391,6 @@ export default function AahaasRealtimeV02() {
     }
   }
 
-  async function exportErrorDataset() {
-    setErrorDatasetSaving(true);
-    setErrorReportMessage("");
-    try {
-      const res = await fetch(`${LARAVEL_API}/aahaas-realtime/error-reports/export`, {
-        method: "POST",
-        headers: { Accept: "application/json" },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.message || "Could not export error dataset.");
-
-      const files = Array.isArray(data.files) ? data.files : [];
-      setErrorReportMessage(`Exported ${files.length} error file(s) to local storage.`);
-      if (files[0]?.view_url && typeof window !== "undefined") {
-        window.open(files[0].view_url, "_blank", "noopener,noreferrer");
-      }
-    } catch (err) {
-      setErrorReportMessage(err.message || "Could not export error dataset.");
-    } finally {
-      setErrorDatasetSaving(false);
-    }
-  }
-
   async function downloadAllErrorReports() {
     setDownloadAllSaving(true);
     setErrorReportMessage("");
@@ -438,14 +398,11 @@ export default function AahaasRealtimeV02() {
       const res = await fetch(`${LARAVEL_API}/aahaas-realtime/error-reports/download`, {
         headers: { Accept: "application/json" },
       });
-      const blob = await res.blob();
-      if (!res.ok) {
-        const text = await blob.text().catch(() => "");
-        throw new Error(text || "Could not download all error reports.");
-      }
-      const payload = await blob.text();
-      downloadJsonFile(JSON.parse(payload), "error-reports-all.json");
-      setErrorReportMessage("Downloaded all error reports as JSON.");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || "Could not download all error reports.");
+
+      downloadJsonFile(data.payload || {}, data.file_name || "error-reports.json");
+      setErrorReportMessage(`Saved ${data.count || 0} report(s) to ${data.saved_path || "local storage"}.`);
     } catch (err) {
       setErrorReportMessage(err.message || "Could not download all error reports.");
     } finally {
@@ -1263,6 +1220,7 @@ export default function AahaasRealtimeV02() {
             <div style={{ padding: "11px 16px", borderBottom: reportCollapsed ? "none" : "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
               <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>Error Test Report</span>
+                <span style={{ fontSize: 11, color: "#94a3b8" }}>Write a report, then browse submitted data in a separate tab.</span>
                 </div>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <button
@@ -1280,7 +1238,7 @@ export default function AahaasRealtimeV02() {
                     minWidth: 96,
                   }}
                 >
-                  {errorReportsTab === "reports" ? "View Reports" : "Write Report"}
+                  {errorReportsTab === "reports" ? "Stored Data" : "Write Report"}
                 </button>
                 <button
                   type="button"
@@ -1335,7 +1293,7 @@ export default function AahaasRealtimeV02() {
                       cursor: "pointer",
                     }}
                   >
-                    View Reports
+                    Stored Data
                   </button>
                 </div>
 
@@ -1391,12 +1349,12 @@ export default function AahaasRealtimeV02() {
                           fontWeight: 700,
                           fontSize: 12,
                         }}
-                      >
+                        >
                         {errorReportSaving ? "Saving..." : "Submit Error"}
                       </button>
                       <button
                         type="button"
-                        onClick={() => setErrorReportsTab("reports")}
+                        onClick={loadErrorReports}
                         disabled={errorReportsLoading && errorReports.length === 0}
                         style={{
                           padding: "10px 12px",
@@ -1409,7 +1367,7 @@ export default function AahaasRealtimeV02() {
                           cursor: "pointer",
                         }}
                       >
-                        Open Reports Tab
+                        List All Submitted Errors
                       </button>
                     </div>
 
@@ -1434,25 +1392,8 @@ export default function AahaasRealtimeV02() {
                           fontSize: 12,
                           cursor: errorReportsLoading ? "not-allowed" : "pointer",
                         }}
-                      >
-                        {errorReportsLoading ? "Loading..." : "Refresh Reports"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={exportErrorDataset}
-                        disabled={errorDatasetSaving || errorReports.length === 0}
-                        style={{
-                          padding: "10px 12px",
-                          borderRadius: 8,
-                          border: "1px solid rgba(255,255,255,0.12)",
-                          background: errorDatasetSaving || errorReports.length === 0 ? "rgba(255,255,255,0.04)" : "rgba(16,185,129,0.14)",
-                          color: errorDatasetSaving || errorReports.length === 0 ? "#64748b" : "#6ee7b7",
-                          fontWeight: 700,
-                          fontSize: 12,
-                          cursor: errorDatasetSaving || errorReports.length === 0 ? "not-allowed" : "pointer",
-                        }}
-                      >
-                        {errorDatasetSaving ? "Updating..." : "Update Error Dataset"}
+                        >
+                        {errorReportsLoading ? "Loading..." : "List All Submitted Errors"}
                       </button>
                       <button
                         type="button"
@@ -1469,7 +1410,7 @@ export default function AahaasRealtimeV02() {
                           cursor: downloadAllSaving || errorReports.length === 0 ? "not-allowed" : "pointer",
                         }}
                       >
-                        {downloadAllSaving ? "Downloading..." : "Download All JSON"}
+                        {downloadAllSaving ? "Downloading..." : "Download All"}
                       </button>
                       <button
                         type="button"
@@ -1491,7 +1432,7 @@ export default function AahaasRealtimeV02() {
                     </div>
 
                     <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.55 }}>
-                      {errorReportMessage || "Browse saved errors one by one. Use the buttons above to export the local errortest*.json files or clear everything from the database."}
+                      {errorReportMessage || "Browse submitted errors one by one. Download all of them into one JSON file or clear everything from the database."}
                     </div>
 
                     <div style={{ display: "grid", gridTemplateColumns: "170px 1fr", gap: 10, alignItems: "start", marginTop: 2 }}>
@@ -1607,41 +1548,6 @@ export default function AahaasRealtimeV02() {
                                     Export File: {report.export_file_name || "n/a"}
                                   </div>
                                 </div>
-                              </div>
-
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                                <button
-                                  type="button"
-                                  onClick={() => openJsonInNewTab(report, `${report.report_id || "error-report"}.json`)}
-                                  style={{
-                                    padding: "8px 10px",
-                                    borderRadius: 8,
-                                    border: "1px solid rgba(255,255,255,0.12)",
-                                    background: "rgba(59,130,246,0.14)",
-                                    color: "#bfdbfe",
-                                    fontWeight: 700,
-                                    fontSize: 11,
-                                    cursor: "pointer",
-                                  }}
-                                >
-                                  View Raw JSON
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => downloadJsonFile(report, `${report.report_id || "error-report"}.json`)}
-                                  style={{
-                                    padding: "8px 10px",
-                                    borderRadius: 8,
-                                    border: "1px solid rgba(255,255,255,0.12)",
-                                    background: "rgba(16,185,129,0.14)",
-                                    color: "#6ee7b7",
-                                    fontWeight: 700,
-                                    fontSize: 11,
-                                    cursor: "pointer",
-                                  }}
-                                >
-                                  Download This JSON
-                                </button>
                               </div>
 
                               <div style={{ fontSize: 10, color: "#94a3b8", lineHeight: 1.5 }}>
