@@ -114,6 +114,7 @@ export default function AahaasRealtimeV02() {
   const responseBusyRef    = useRef(false);
   const queuedResponseRef  = useRef(false);
   const openingSentRef     = useRef(false);
+  const sessionEpochRef    = useRef(0);
   const detectedCountryRef   = useRef("Sri Lanka");
   const holdMusicEnabledRef  = useRef(true);
   const holdMusicVolumeRef   = useRef(0.28);
@@ -245,6 +246,11 @@ export default function AahaasRealtimeV02() {
     nextPlayTimeRef.current = 0;
   }
 
+  function beginNewCallSession() {
+    sessionEpochRef.current += 1;
+    voiceSessionIdRef.current = null;
+  }
+
   // ── Mic capture ───────────────────────────────────────────────────────────
   async function startMicCapture() {
     const ctx = new AudioContext({ sampleRate: 24000 });
@@ -321,6 +327,7 @@ export default function AahaasRealtimeV02() {
     if (audioCtxRef.current?.state !== "closed") audioCtxRef.current?.close();
     audioCtxRef.current = null; holdBufRef.current = null;
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
+    voiceSessionIdRef.current = null;
     nextPlayTimeRef.current = 0; setMicLevel(0);
   }
 
@@ -404,6 +411,7 @@ export default function AahaasRealtimeV02() {
   }
 
   async function executePackageFetch(call_id, args) {
+    const requestEpoch = sessionEpochRef.current;
     const customerPrompt = String(args.customer_voice_prompt ?? "").trim();
     // Only honour a known action; an unknown/missing one is left null and omitted
     // from the payload so the API classifies the turn (never silently new_request).
@@ -454,6 +462,8 @@ export default function AahaasRealtimeV02() {
         body: JSON.stringify(payload),
       });
       const data = await res.json().catch(() => ({}));
+
+      if (requestEpoch !== sessionEpochRef.current) return;
       addLog(res.ok ? "api-ok" : "api-err",
         `${res.ok ? "✓" : "✗"} [${action || "auto"}] — ${msToDisplay(Date.now() - t0)}`);
 
@@ -509,6 +519,7 @@ export default function AahaasRealtimeV02() {
   }
 
   async function executeWhatsApp(call_id, args) {
+    const requestEpoch = sessionEpochRef.current;
     const { customer_name = "", phone_number = "", package_summary = "" } = args;
     const waId = normalizePhone(phone_number, detectedCountryRef.current);
 
@@ -527,6 +538,8 @@ export default function AahaasRealtimeV02() {
         body: JSON.stringify({ tool: "send_whatsapp_quotation", customer_name, phone_number: waId, package_summary }),
       });
       const data = await res.json().catch(() => ({}));
+
+      if (requestEpoch !== sessionEpochRef.current) return;
 
       if (data.success) {
         output = data.result; setQuotationStatus("sent");
@@ -558,7 +571,7 @@ export default function AahaasRealtimeV02() {
     responseBusyRef.current = false;
     queuedResponseRef.current = false;
     openingSentRef.current = false;
-    voiceSessionIdRef.current = null;  // reset session for new call
+    beginNewCallSession();  // reset session for new call and invalidate in-flight results
 
     try {
       const country = await detectCountry();
@@ -593,9 +606,10 @@ export default function AahaasRealtimeV02() {
     }
   }
 
-  async function saveSession(endedReason = "completed") {
+  async function saveSession(endedReason = "completed", sessionIdOverride = "") {
     try {
       const lastPkg = fetchedPackages[fetchedPackages.length - 1] || null;
+      const voiceSessionId = sessionIdOverride || voiceSessionIdRef.current || "";
       await fetch(`${LARAVEL_API}/aahaas-realtime/save`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -605,7 +619,7 @@ export default function AahaasRealtimeV02() {
           customer_name:     quotationInfo?.name     || "",
           customer_phone:    quotationInfo?.phone    || "",
           country:           detectedCountryRef.current,
-          voice_session_id:  voiceSessionIdRef.current || "",
+          voice_session_id:  voiceSessionId,
           confirmed_package: confirmedPackage || "",
           total_amount:      lastPkg?.pricing?.grand_total || null,
           currency:          lastPkg?.currency || "",
@@ -623,7 +637,10 @@ export default function AahaasRealtimeV02() {
 
   function handleDisconnect() {
     addLog("state", "Disconnecting");
-    saveSession("manual_hangup");
+    const sessionIdSnapshot = voiceSessionIdRef.current || "";
+    sessionEpochRef.current += 1;
+    voiceSessionIdRef.current = null;
+    saveSession("manual_hangup", sessionIdSnapshot);
     teardown();
     setPhase("completed");
     setStatusMsg("Session ended.");
@@ -640,6 +657,7 @@ export default function AahaasRealtimeV02() {
     setHoldMusicActive(false);
     setDetectedCountry("Sri Lanka"); detectedCountryRef.current = "Sri Lanka";
     voiceSessionIdRef.current = null; activeAudioRef.current = [];
+    sessionEpochRef.current += 1;
     responseBusyRef.current = false;
     queuedResponseRef.current = false;
     openingSentRef.current = false;
