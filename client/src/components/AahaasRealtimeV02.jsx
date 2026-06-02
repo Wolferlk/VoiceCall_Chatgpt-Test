@@ -1416,10 +1416,7 @@ export default function AahaasRealtimeV02() {
           {/* Error Test Report */}
           <div style={{ background: "#111827", borderRadius: 14, border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden", marginBottom: 12 }}>
             <div style={{ padding: "11px 16px", borderBottom: reportCollapsed ? "none" : "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>Error Test Report</span>
-                <span style={{ fontSize: 11, color: "#94a3b8" }}>Write a report, then browse submitted data in a separate tab.</span>
-                </div>
+              
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <button
                   type="button"
