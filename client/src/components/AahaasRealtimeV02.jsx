@@ -904,7 +904,7 @@ export default function AahaasRealtimeV02() {
                                   </div>
                                   {p.total_amount && (
                                     <span style={{ fontSize: 11, fontWeight: 700, color: "#1e293b", flexShrink: 0, marginLeft: 8 }}>
-                                      {pkg.currency} {Number(p.total_amount).toFixed(0)}
+                                      {p.currency || pkg.currency} {Number(p.total_amount).toFixed(0)}
                                     </span>
                                   )}
                                 </div>
