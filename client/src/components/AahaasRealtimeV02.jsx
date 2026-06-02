@@ -42,7 +42,7 @@ function msToDisplay(ms) { return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed
 
 // Keep the mic muted for a short tail after the AI's last audio chunk finishes, so
 // the speaker echo of its final words doesn't leak back and trigger a false turn.
-const AI_ECHO_TAIL_SEC = 0.4;
+const AI_ECHO_TAIL_SEC = 0.8;
 
 // Actions the /v1/voice/suggest API understands. Anything outside this set is
 // dropped from the payload so the API classifies the turn itself — we never
@@ -80,7 +80,7 @@ export default function AahaasRealtimeV02() {
   const [phase, setPhase]         = useState("idle");
   const [error, setError]         = useState("");
   const [statusMsg, setStatusMsg] = useState("Ready to connect.");
-  const [selectedVoice, setSelectedVoice] = useState("coral");
+  const [selectedVoice, setSelectedVoice] = useState("verse");
 
   const [detectedCountry, setDetectedCountry]   = useState("Sri Lanka");
   const [conversation, setConversation]         = useState([]);
