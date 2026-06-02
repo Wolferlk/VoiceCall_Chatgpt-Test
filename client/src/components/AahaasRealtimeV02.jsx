@@ -76,6 +76,25 @@ function normalizePhone(phone, country) {
   return d;
 }
 
+function normalizeTextForCompare(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function wordOverlapScore(a, b) {
+  const left = new Set(normalizeTextForCompare(a).split(" ").filter(Boolean));
+  const right = new Set(normalizeTextForCompare(b).split(" ").filter(Boolean));
+  if (left.size === 0 || right.size === 0) return 0;
+  let matches = 0;
+  for (const word of left) {
+    if (right.has(word)) matches += 1;
+  }
+  return matches / Math.max(left.size, right.size);
+}
+
 export default function AahaasRealtimeV02() {
   const [phase, setPhase]         = useState("idle");
   const [error, setError]         = useState("");
@@ -111,6 +130,7 @@ export default function AahaasRealtimeV02() {
   const terminalEndRef     = useRef(null);
   const pendingFnRef       = useRef(null);
   const aiTransBufRef      = useRef("");
+  const lastUserTranscriptRef = useRef("");
   const responseBusyRef    = useRef(false);
   const queuedResponseRef  = useRef(false);
   const openingSentRef     = useRef(false);
@@ -140,6 +160,14 @@ export default function AahaasRealtimeV02() {
   function pushMessage(role, content) {
     if (!content?.trim()) return;
     setConversation((p) => [...p, { role, content: content.trim() }]);
+  }
+  function looksLikeGarbledTurn(transcript, proposedPrompt) {
+    const actual = normalizeTextForCompare(transcript);
+    const proposed = normalizeTextForCompare(proposedPrompt);
+    if (!actual || !proposed) return false;
+    const actualWords = actual.split(" ").filter(Boolean);
+    if (actualWords.length <= 5) return wordOverlapScore(actual, proposed) < 0.4;
+    return wordOverlapScore(actual, proposed) < 0.25;
   }
   function sendWs(obj) {
     if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify(obj));
@@ -357,6 +385,7 @@ export default function AahaasRealtimeV02() {
     }
     if (type === "conversation.item.input_audio_transcription.completed") {
       const text = msg.transcript || "";
+      lastUserTranscriptRef.current = text;
       setUserTranscript(text); if (text) pushMessage("user", text);
       addLog("info", "You said", text.slice(0, 80)); return;
     }
@@ -415,9 +444,21 @@ export default function AahaasRealtimeV02() {
   async function executePackageFetch(call_id, args) {
     const requestEpoch = sessionEpochRef.current;
     const customerPrompt = String(args.customer_voice_prompt ?? "").trim();
+    const actualTranscript = lastUserTranscriptRef.current || "";
     // Only honour a known action; an unknown/missing one is left null and omitted
     // from the payload so the API classifies the turn (never silently new_request).
     const action = VALID_SUGGEST_ACTIONS.includes(args.action) ? args.action : null;
+
+    // If the model's proposed prompt does not line up with what the user actually
+    // said, treat it as a bad/garbled turn and ask for a repeat instead of guessing.
+    if (looksLikeGarbledTurn(actualTranscript, customerPrompt)) {
+      addLog("warn", "Tool prompt did not match transcript — asking for clarification", actualTranscript.slice(0, 80));
+      sendWs({ type: "conversation.item.create", item: { type: "function_call_output", call_id,
+        output: "The caller's words were unclear or low confidence. Do not guess a destination or change. Ask them to repeat the request clearly and naturally." } });
+      queueFollowupResponse();
+      setPhase("speaking");
+      return;
+    }
 
     // Guard: malformed/empty tool args must not trigger a destructive empty call.
     if (!customerPrompt) {
