@@ -79,7 +79,7 @@ class AahaasRealtimeToolController extends Controller
         // The suggest API only accepts a free-text `prompt`. Rather than ship the raw
         // utterance and hope the parser guesses right (lossy on "change" turns), we
         // fold the model's structured slots into one explicit, deterministic prompt.
-        $finalPrompt = $this->composeCanonicalPrompt($prompt, $details);
+        $finalPrompt = $this->composeCanonicalPrompt($prompt, $details, $action);
 
         $payload = ['prompt' => $finalPrompt];
 
@@ -256,7 +256,7 @@ class AahaasRealtimeToolController extends Controller
      * The raw utterance is always preserved (parser keeps full context); the
      * structured lines just remove ambiguity.
      */
-    private function composeCanonicalPrompt(string $prompt, array $details): string
+    private function composeCanonicalPrompt(string $prompt, array $details, string $action = ''): string
     {
         $lines = [];
 
@@ -289,11 +289,31 @@ class AahaasRealtimeToolController extends Controller
             return $out;
         };
 
-        if (($v = $str($details['destination'] ?? null)) !== '') $lines[] = "Destination: {$v}.";
+        $isNewRequest = ($action === '' || $action === 'new_request');
+        $destination  = $str($details['destination'] ?? null);
+        $hotelName    = $str($details['hotel_name'] ?? null);
+
+        // A destination is a TRIP RESET only on a new request. On add/change turns,
+        // the customer naming a place ("a beach hotel in Kandy") means WHERE to add
+        // something — NOT "throw away the rest of the trip". Emitting a bare
+        // "Destination:" there collapsed multi-city trips down to that one city.
+        if ($destination !== '' && $isNewRequest) {
+            $lines[] = "Destination: {$destination}.";
+        }
+
         if (($n = $int($details['nights']      ?? null, 1, 60)) > 0) $lines[] = "Stay: {$n} nights.";
         if (($n = $int($details['travelers']   ?? null, 1, 50)) > 0) $lines[] = "Travelers: {$n}.";
         if (($n = $int($details['star_rating'] ?? null, 1, 7))  > 0) $lines[] = "Hotel category: {$n}-star.";
-        if (($v = $str($details['hotel_name']  ?? null)) !== '') $lines[] = "Hotel: {$v}.";
+
+        // Fold the destination into the hotel line as its LOCATION on non-new turns;
+        // if there's a destination but no hotel name, say it's a location for THIS
+        // change only so the planner keeps the rest of the trip intact.
+        if ($hotelName !== '') {
+            $loc = (! $isNewRequest && $destination !== '') ? " in {$destination}" : '';
+            $lines[] = "Hotel: {$hotelName}{$loc}.";
+        } elseif ($destination !== '' && ! $isNewRequest) {
+            $lines[] = "Add this in {$destination} only — keep the existing trip and all its other cities unchanged.";
+        }
 
         if (($a = $list($details['add_items']    ?? null)) !== []) $lines[] = "Add: "    . implode(', ', $a) . ".";
         if (($a = $list($details['remove_items'] ?? null)) !== []) $lines[] = "Remove: " . implode(', ', $a) . ".";
