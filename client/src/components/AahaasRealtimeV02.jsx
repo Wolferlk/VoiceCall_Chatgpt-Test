@@ -111,9 +111,13 @@ export default function AahaasRealtimeV02() {
   const [confirmedPackage, setConfirmedPackage] = useState(null); // summary after user confirms
   const [quotationStatus, setQuotationStatus]   = useState("idle"); // idle|sending|sent|failed
   const [quotationInfo, setQuotationInfo]       = useState(null);   // {name, phone}
-  const [holdMusicEnabled, setHoldMusicEnabled] = useState(true);
+  const [apiResponses, setApiResponses]         = useState([]); // [{type, timestamp, data}] — all API responses
+  const [expandedResponseId, setExpandedResponseId] = useState(null); // track which response is expanded
+  const [holdMusicEnabled, setHoldMusicEnabled] = useState(false);
   const [holdMusicVolume, setHoldMusicVolume]   = useState(0.28); // 0-1
   const [holdMusicActive, setHoldMusicActive]   = useState(false); // true while music plays
+  const [callPaused, setCallPaused]             = useState(false); // true when call is paused
+  const [micMuted, setMicMuted]                 = useState(false); // true when mic is muted
   const [terminalLog, setTerminalLog]           = useState([]);
   const [reportCollapsed, setReportCollapsed]   = useState(true);
   const [errorReportTitle, setErrorReportTitle] = useState("Realtime Test Report");
@@ -148,8 +152,10 @@ export default function AahaasRealtimeV02() {
   const openingSentRef     = useRef(false);
   const sessionEpochRef    = useRef(0);
   const detectedCountryRef   = useRef("Sri Lanka");
-  const holdMusicEnabledRef  = useRef(true);
+  const holdMusicEnabledRef  = useRef(false);
   const holdMusicVolumeRef   = useRef(0.28);
+  const callPausedRef        = useRef(false);
+  const micMutedRef          = useRef(false);
   const voiceSessionIdRef    = useRef(null);   // persists the vs_... session across turns
   const activeAudioRef       = useRef([]);     // all live AudioBufferSourceNodes (for overlap fix)
   // Hold music refs
@@ -161,6 +167,8 @@ export default function AahaasRealtimeV02() {
   useEffect(() => { detectedCountryRef.current = detectedCountry; }, [detectedCountry]);
   useEffect(() => { holdMusicEnabledRef.current = holdMusicEnabled; }, [holdMusicEnabled]);
   useEffect(() => { holdMusicVolumeRef.current = holdMusicVolume; }, [holdMusicVolume]);
+  useEffect(() => { callPausedRef.current = callPaused; }, [callPaused]);
+  useEffect(() => { micMutedRef.current = micMuted; }, [micMuted]);
   useEffect(() => { if (terminalEndRef.current) terminalEndRef.current.scrollIntoView({ behavior: "smooth" }); }, [terminalLog]);
   useEffect(() => {
     if (error && !errorReportDetails) {
@@ -471,7 +479,7 @@ export default function AahaasRealtimeV02() {
       const aiAudioTail = ctx && ctx.currentTime < nextPlayTimeRef.current + AI_ECHO_TAIL_SEC;
       // Keep the mic open during assistant speech so the caller can barge in naturally.
       // Only suppress input during hold-music/processing phases and the short tail after playback.
-      const muteMic     = aiBusyPhase || aiAudioTail;
+      const muteMic     = aiBusyPhase || aiAudioTail || callPausedRef.current || micMutedRef.current;
 
       const pcm = muteMic ? new Int16Array(f32.length) : float32ToPcm16(f32);
       wsRef.current.send(JSON.stringify({ type: "input_audio_buffer.append", audio: bufToBase64(pcm.buffer) }));
@@ -666,6 +674,22 @@ export default function AahaasRealtimeV02() {
       addLog(res.ok ? "api-ok" : "api-err",
         `${res.ok ? "✓" : "✗"} [${action || "auto"}] — ${msToDisplay(Date.now() - t0)}`);
 
+      // Store full API response
+      setApiResponses((prev) => [
+        ...prev,
+        {
+          id: `suggest-${Date.now()}`,
+          type: "suggest",
+          timestamp: new Date().toLocaleTimeString(),
+          endpoint: "/v1/voice/suggest",
+          request: payload,
+          response: data,
+          status: res.ok ? "success" : "error",
+          statusCode: res.status,
+          duration: Date.now() - t0,
+        },
+      ]);
+
       if (data.success) {
         // Save session_id for subsequent turns — this is how the API maintains cart state
         if (data.session_id) {
@@ -707,6 +731,19 @@ export default function AahaasRealtimeV02() {
     } catch (e) {
       addLog("api-err", `Package error: ${e.message}`);
       setPackageStatus("failed");
+      setApiResponses((prev) => [
+        ...prev,
+        {
+          id: `suggest-error-${Date.now()}`,
+          type: "suggest",
+          timestamp: new Date().toLocaleTimeString(),
+          endpoint: "/v1/voice/suggest",
+          request: payload,
+          response: { error: e.message },
+          status: "error",
+          statusCode: 0,
+        },
+      ]);
     }
 
     if (isSlowAction && holdMusicEnabledRef.current) stopHoldMusic();
@@ -740,6 +777,21 @@ export default function AahaasRealtimeV02() {
 
       if (requestEpoch !== sessionEpochRef.current) return;
 
+      // Store full API response
+      setApiResponses((prev) => [
+        ...prev,
+        {
+          id: `whatsapp-${Date.now()}`,
+          type: "send_whatsapp",
+          timestamp: new Date().toLocaleTimeString(),
+          endpoint: "send_whatsapp_quotation",
+          request: { customer_name, phone_number: waId, package_summary },
+          response: data,
+          status: res.ok ? "success" : "error",
+          statusCode: res.status,
+        },
+      ]);
+
       if (data.success) {
         output = data.result; setQuotationStatus("sent");
         setQuotationInfo({ name: customer_name, phone: waId, sent: true });
@@ -750,6 +802,19 @@ export default function AahaasRealtimeV02() {
       }
     } catch (e) {
       setQuotationStatus("failed"); addLog("api-err", `WhatsApp error: ${e.message}`);
+      setApiResponses((prev) => [
+        ...prev,
+        {
+          id: `whatsapp-error-${Date.now()}`,
+          type: "send_whatsapp",
+          timestamp: new Date().toLocaleTimeString(),
+          endpoint: "send_whatsapp_quotation",
+          request: { customer_name, phone_number: waId, package_summary },
+          response: { error: e.message },
+          status: "error",
+          statusCode: 0,
+        },
+      ]);
     }
 
     sendWs({ type: "conversation.item.create", item: { type: "function_call_output", call_id, output } });
@@ -869,6 +934,30 @@ export default function AahaasRealtimeV02() {
     setErrorReportTitle("Realtime Test Report");
     setErrorReportSeverity("medium");
     setErrorReportDetails("");
+    setCallPaused(false);
+    setMicMuted(false);
+  }
+
+  function handlePauseToggle() {
+    setCallPaused((p) => !p);
+    if (!callPaused) {
+      addLog("state", "Call paused — AI listening disabled");
+      setStatusMsg("Call paused");
+    } else {
+      addLog("state", "Call resumed");
+      setStatusMsg("Connected — speak when ready.");
+    }
+  }
+
+  function handleMicToggle() {
+    setMicMuted((p) => !p);
+    if (!micMuted) {
+      addLog("state", "Microphone muted");
+      setStatusMsg("Mic muted");
+    } else {
+      addLog("state", "Microphone unmuted");
+      setStatusMsg("Connected — speak when ready.");
+    }
   }
 
   // ── Derived ───────────────────────────────────────────────────────────────
@@ -1055,9 +1144,15 @@ export default function AahaasRealtimeV02() {
             </div>
             <div style={{ fontWeight: 600, color: "#1e293b", fontSize: 14, marginBottom: 6 }}>{statusMsg}</div>
             {error && <div style={{ color: "#ef4444", fontSize: 12, marginTop: 6, background: "rgba(239,68,68,0.06)", padding: "6px 12px", borderRadius: 8 }}>{error}</div>}
-            <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 18 }}>
+            <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 18, flexWrap: "wrap" }}>
               <button type="button" onClick={handleConnect} disabled={!canConnect} style={{ padding: "11px 28px", borderRadius: 10, border: "none", cursor: !canConnect ? "not-allowed" : "pointer", background: !canConnect ? "#e2e8f0" : "linear-gradient(135deg,#6366f1,#8b5cf6)", color: !canConnect ? "#94a3b8" : "#fff", fontWeight: 700, fontSize: 13, boxShadow: !canConnect ? "none" : "0 4px 14px rgba(99,102,241,0.32)" }}>
                 ⚡ Connect
+              </button>
+              <button type="button" onClick={handlePauseToggle} disabled={!canDisconnect} style={{ padding: "11px 20px", borderRadius: 10, border: "none", cursor: !canDisconnect ? "not-allowed" : "pointer", background: !canDisconnect ? "#e2e8f0" : callPaused ? "linear-gradient(135deg,#f97316,#ea580c)" : "linear-gradient(135deg,#3b82f6,#2563eb)", color: !canDisconnect ? "#94a3b8" : "#fff", fontWeight: 700, fontSize: 13, boxShadow: !canDisconnect ? "none" : "0 4px 14px rgba(59,130,246,0.32)" }}>
+                ⏸ {callPaused ? "Resume" : "Pause"}
+              </button>
+              <button type="button" onClick={handleMicToggle} disabled={!canDisconnect} style={{ padding: "11px 20px", borderRadius: 10, border: "none", cursor: !canDisconnect ? "not-allowed" : "pointer", background: !canDisconnect ? "#e2e8f0" : micMuted ? "linear-gradient(135deg,#ec4899,#db2777)" : "linear-gradient(135deg,#10b981,#059669)", color: !canDisconnect ? "#94a3b8" : "#fff", fontWeight: 700, fontSize: 13, boxShadow: !canDisconnect ? "none" : "0 4px 14px rgba(16,185,129,0.32)" }}>
+                🎤 {micMuted ? "Unmute" : "Mute"}
               </button>
               <button type="button" onClick={handleDisconnect} disabled={!canDisconnect} style={{ padding: "11px 24px", borderRadius: 10, border: "none", cursor: !canDisconnect ? "not-allowed" : "pointer", background: !canDisconnect ? "#e2e8f0" : "linear-gradient(135deg,#ef4444,#dc2626)", color: !canDisconnect ? "#94a3b8" : "#fff", fontWeight: 700, fontSize: 13, boxShadow: !canDisconnect ? "none" : "0 4px 14px rgba(239,68,68,0.32)" }}>
                 ■ End
@@ -1215,6 +1310,66 @@ export default function AahaasRealtimeV02() {
 
         {/* RIGHT: Terminal */}
         <aside>
+          {/* API Responses Viewer */}
+          <div style={{ background: "#111827", borderRadius: 14, border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden", marginBottom: 12 }}>
+            <div style={{ padding: "11px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>📡 API Responses</span>
+                <span style={{ fontSize: 11, color: "#94a3b8" }}>Full request/response data from all API calls.</span>
+              </div>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#cbd5e1", background: "rgba(99,102,241,0.15)", padding: "3px 10px", borderRadius: 6 }}>
+                {apiResponses.length} call{apiResponses.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+            <div style={{ maxHeight: 400, overflowY: "auto", padding: "10px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
+              {apiResponses.length === 0 ? (
+                <div style={{ fontSize: 11, color: "#64748b", fontStyle: "italic" }}>No API calls yet. Start a conversation to see requests and responses.</div>
+              ) : (
+                apiResponses.map((resp) => (
+                  <div key={resp.id} style={{ background: "rgba(15,23,42,0.8)", border: `1px solid ${resp.status === "success" ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.2)"}`, borderRadius: 8, overflow: "hidden" }}>
+                    <div
+                      onClick={() => setExpandedResponseId(expandedResponseId === resp.id ? null : resp.id)}
+                      style={{ padding: "8px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", background: resp.status === "success" ? "rgba(16,185,129,0.05)" : "rgba(239,68,68,0.05)", userSelect: "none" }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+                        <span style={{ fontSize: 10, color: resp.status === "success" ? "#86efac" : "#fca5a5", fontWeight: 700 }}>
+                          {resp.status === "success" ? "✓" : "✗"}
+                        </span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "#e2e8f0" }}>{resp.type.toUpperCase()}</div>
+                          <div style={{ fontSize: 9, color: "#94a3b8" }}>{resp.endpoint}</div>
+                        </div>
+                        <div style={{ fontSize: 9, color: "#94a3b8", flexShrink: 0 }}>
+                          {resp.statusCode && <span>{resp.statusCode}</span>}
+                          {resp.duration && <span> · {resp.duration}ms</span>}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: 12, color: "#94a3b8", marginLeft: 8 }}>
+                        {expandedResponseId === resp.id ? "▼" : "▶"}
+                      </span>
+                    </div>
+                    {expandedResponseId === resp.id && (
+                      <div style={{ padding: "10px", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div>
+                          <div style={{ fontSize: 9, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Request</div>
+                          <pre style={{ fontSize: 8, color: "#cbd5e1", background: "rgba(0,0,0,0.3)", padding: 8, borderRadius: 4, margin: 0, overflow: "auto", maxHeight: 150, fontFamily: "monospace", whiteSpace: "pre-wrap", wordWrap: "break-word" }}>
+                            {JSON.stringify(resp.request, null, 2)}
+                          </pre>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 9, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Response</div>
+                          <pre style={{ fontSize: 8, color: "#cbd5e1", background: "rgba(0,0,0,0.3)", padding: 8, borderRadius: 4, margin: 0, overflow: "auto", maxHeight: 200, fontFamily: "monospace", whiteSpace: "pre-wrap", wordWrap: "break-word" }}>
+                            {JSON.stringify(resp.response, null, 2)}
+                          </pre>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
           {/* Error Test Report */}
           <div style={{ background: "#111827", borderRadius: 14, border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden", marginBottom: 12 }}>
             <div style={{ padding: "11px 16px", borderBottom: reportCollapsed ? "none" : "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
