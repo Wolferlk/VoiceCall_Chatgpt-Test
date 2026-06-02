@@ -150,6 +150,7 @@ export default function AahaasRealtimeV02() {
   const detectedCountryRef   = useRef("Sri Lanka");
   const holdMusicEnabledRef  = useRef(true);
   const holdMusicVolumeRef   = useRef(0.28);
+  const sensitivityRef       = useRef(0.015);  // live mic sensitivity for the barge-in gate
   const voiceSessionIdRef    = useRef(null);   // persists the vs_... session across turns
   const activeAudioRef       = useRef([]);     // all live AudioBufferSourceNodes (for overlap fix)
   // Hold music refs
@@ -161,6 +162,7 @@ export default function AahaasRealtimeV02() {
   useEffect(() => { detectedCountryRef.current = detectedCountry; }, [detectedCountry]);
   useEffect(() => { holdMusicEnabledRef.current = holdMusicEnabled; }, [holdMusicEnabled]);
   useEffect(() => { holdMusicVolumeRef.current = holdMusicVolume; }, [holdMusicVolume]);
+  useEffect(() => { sensitivityRef.current = sensitivity; }, [sensitivity]);
   useEffect(() => { if (terminalEndRef.current) terminalEndRef.current.scrollIntoView({ behavior: "smooth" }); }, [terminalLog]);
   useEffect(() => {
     if (error && !errorReportDetails) {
@@ -458,20 +460,26 @@ export default function AahaasRealtimeV02() {
       const rms = Math.sqrt(sum / f32.length);
       setMicLevel((p) => p * 0.6 + rms * 0.4);
 
-      // ── Half-duplex echo guard ──────────────────────────────────────────────
-      // On SPEAKERS the AI's own voice leaks back into the mic. Browser echo-
-      // cancellation does not reliably cancel Web-Audio playback, so the model was
-      // hearing itself, firing speech_started, and cutting its own reply off
-      // mid-sentence (also what made it sound choppy). While the AI is speaking —
-      // or searching with hold music — we send SILENCE upstream so it never hears
-      // itself. When it's the caller's turn we stream the full mic and let the
-      // server's noise_reduction + semantic_vad handle background noise.
+      // ── Barge-in gate (lets the caller interrupt the AI) ────────────────────
+      // On SPEAKERS the AI's own voice leaks back into the mic. Fully muting the
+      // mic while the AI speaks stopped the model hearing itself — but it also made
+      // interruption impossible, because the server never received the caller's
+      // voice to act on. Instead of a hard mute we now use a NOISE GATE: while the
+      // AI is talking we keep sending silence for the low-level speaker echo (which,
+      // with echo-cancellation on, sits near the noise floor), but the instant the
+      // caller speaks clearly OVER the AI (RMS well above that floor) we pass their
+      // real voice through so semantic_vad fires interrupt_response and cuts the AI
+      // off. On the caller's own turn the full mic streams as before.
       const ctx = audioCtxRef.current;
       const aiBusyPhase = ["speaking", "searching", "sending_wa"].includes(phaseRef.current);
       const aiAudioTail = ctx && ctx.currentTime < nextPlayTimeRef.current + AI_ECHO_TAIL_SEC;
-      // Keep the mic muted while the assistant is speaking so playback does not leak
-      // back into the model and break the response on hosted deployments.
-      const muteMic     = responseBusyRef.current || aiBusyPhase || aiAudioTail;
+      const aiSpeaking  = responseBusyRef.current || aiBusyPhase || aiAudioTail;
+
+      // Barge-in threshold sits comfortably above the echo floor so the AI's own
+      // playback never re-opens the gate, but a real interrupting voice does.
+      const bargeInThreshold = Math.max(sensitivityRef.current * 2.5, 0.05);
+      const callerBargingIn  = rms > bargeInThreshold;
+      const muteMic = aiSpeaking && !callerBargingIn;
 
       const pcm = muteMic ? new Int16Array(f32.length) : float32ToPcm16(f32);
       wsRef.current.send(JSON.stringify({ type: "input_audio_buffer.append", audio: bufToBase64(pcm.buffer) }));
