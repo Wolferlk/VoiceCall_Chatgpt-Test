@@ -115,6 +115,19 @@ export default function AahaasRealtimeV02() {
   const [holdMusicVolume, setHoldMusicVolume]   = useState(0.28); // 0-1
   const [holdMusicActive, setHoldMusicActive]   = useState(false); // true while music plays
   const [terminalLog, setTerminalLog]           = useState([]);
+  const [reportCollapsed, setReportCollapsed]   = useState(true);
+  const [errorReportTitle, setErrorReportTitle] = useState("Realtime Test Report");
+  const [errorReportSeverity, setErrorReportSeverity] = useState("medium");
+  const [errorReportDetails, setErrorReportDetails] = useState("");
+  const [errorReportSaving, setErrorReportSaving] = useState(false);
+  const [errorReportMessage, setErrorReportMessage] = useState("");
+  const [errorReports, setErrorReports]         = useState([]);
+  const [errorReportsLoading, setErrorReportsLoading] = useState(false);
+  const [errorDatasetSaving, setErrorDatasetSaving]   = useState(false);
+  const [errorReportsTab, setErrorReportsTab]   = useState("form"); // form|reports
+  const [selectedErrorReportIndex, setSelectedErrorReportIndex] = useState(0);
+  const [downloadAllSaving, setDownloadAllSaving] = useState(false);
+  const [resetErrorsSaving, setResetErrorsSaving] = useState(false);
   const [callDuration, setCallDuration]         = useState(0);
   const [micLevel, setMicLevel]                 = useState(0);
   const [sensitivity, setSensitivity]           = useState(0.015);
@@ -150,6 +163,23 @@ export default function AahaasRealtimeV02() {
   useEffect(() => { holdMusicEnabledRef.current = holdMusicEnabled; }, [holdMusicEnabled]);
   useEffect(() => { holdMusicVolumeRef.current = holdMusicVolume; }, [holdMusicVolume]);
   useEffect(() => { if (terminalEndRef.current) terminalEndRef.current.scrollIntoView({ behavior: "smooth" }); }, [terminalLog]);
+  useEffect(() => {
+    if (error && !errorReportDetails) {
+      setErrorReportDetails(error);
+      setReportCollapsed(false);
+    }
+  }, [error]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!reportCollapsed) {
+      loadErrorReports().catch(() => {});
+    }
+  }, [reportCollapsed]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setSelectedErrorReportIndex((prev) => {
+      if (errorReports.length === 0) return 0;
+      return Math.min(prev, errorReports.length - 1);
+    });
+  }, [errorReports]);
   useEffect(() => () => teardown(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -277,6 +307,175 @@ export default function AahaasRealtimeV02() {
   function beginNewCallSession() {
     sessionEpochRef.current += 1;
     voiceSessionIdRef.current = null;
+  }
+
+  function openJsonInNewTab(payload, fileName = "error-report.json") {
+    if (typeof window === "undefined") return;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const win = window.open(url, "_blank", "noopener,noreferrer");
+    if (!win) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    win.document.title = fileName;
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+
+  function downloadJsonFile(payload, fileName = "download.json") {
+    if (typeof window === "undefined") return;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+
+  function getSelectedErrorReport() {
+    if (!errorReports.length) return null;
+    const safeIndex = Math.max(0, Math.min(selectedErrorReportIndex, errorReports.length - 1));
+    return errorReports[safeIndex] || null;
+  }
+
+  function buildErrorReportPayload() {
+    return {
+      title: errorReportTitle.trim() || "Realtime Test Report",
+      details: errorReportDetails.trim(),
+      severity: errorReportSeverity,
+      session_id: voiceSessionIdRef.current || "",
+      country: detectedCountryRef.current,
+      current_error: error || "",
+      phase,
+      latest_transcript: userTranscript || "",
+      package_status: packageStatus,
+      conversation,
+      terminal_log: terminalLog,
+      packages: fetchedPackages,
+      quotation_status: quotationStatus,
+    };
+  }
+
+  async function submitErrorReport() {
+    const title = errorReportTitle.trim();
+    const details = errorReportDetails.trim();
+    if (!title || !details) {
+      setErrorReportMessage("Title and details are required.");
+      return;
+    }
+
+    setErrorReportSaving(true);
+    setErrorReportMessage("");
+
+    try {
+      const res = await fetch(`${LARAVEL_API}/aahaas-realtime/error-reports`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(buildErrorReportPayload()),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || "Could not save error dataset.");
+
+      setErrorReportMessage(`Saved to database as ${data.report?.report_id || "new error report"}.`);
+      setErrorReports((prev) => [data.report, ...prev.filter((r) => r.report_id !== data.report?.report_id)]);
+      setErrorReportDetails("");
+      setErrorReportsTab("reports");
+      setSelectedErrorReportIndex(0);
+      if (data.report) {
+        openJsonInNewTab(data.report, `${data.report.report_id || "error-report"}.json`);
+      }
+    } catch (err) {
+      setErrorReportMessage(err.message || "Could not save error dataset.");
+    } finally {
+      setErrorReportSaving(false);
+    }
+  }
+
+  async function loadErrorReports() {
+    setErrorReportsLoading(true);
+    try {
+      const res = await fetch(`${LARAVEL_API}/aahaas-realtime/error-reports`, { headers: { Accept: "application/json" } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || "Could not load submitted errors.");
+      setErrorReports(Array.isArray(data.reports) ? data.reports : []);
+    } catch (err) {
+      setErrorReportMessage(err.message || "Could not load submitted errors.");
+    } finally {
+      setErrorReportsLoading(false);
+    }
+  }
+
+  async function exportErrorDataset() {
+    setErrorDatasetSaving(true);
+    setErrorReportMessage("");
+    try {
+      const res = await fetch(`${LARAVEL_API}/aahaas-realtime/error-reports/export`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || "Could not export error dataset.");
+
+      const files = Array.isArray(data.files) ? data.files : [];
+      setErrorReportMessage(`Exported ${files.length} error file(s) to local storage.`);
+      if (files[0]?.view_url && typeof window !== "undefined") {
+        window.open(files[0].view_url, "_blank", "noopener,noreferrer");
+      }
+    } catch (err) {
+      setErrorReportMessage(err.message || "Could not export error dataset.");
+    } finally {
+      setErrorDatasetSaving(false);
+    }
+  }
+
+  async function downloadAllErrorReports() {
+    setDownloadAllSaving(true);
+    setErrorReportMessage("");
+    try {
+      const res = await fetch(`${LARAVEL_API}/aahaas-realtime/error-reports/download`, {
+        headers: { Accept: "application/json" },
+      });
+      const blob = await res.blob();
+      if (!res.ok) {
+        const text = await blob.text().catch(() => "");
+        throw new Error(text || "Could not download all error reports.");
+      }
+      const payload = await blob.text();
+      downloadJsonFile(JSON.parse(payload), "error-reports-all.json");
+      setErrorReportMessage("Downloaded all error reports as JSON.");
+    } catch (err) {
+      setErrorReportMessage(err.message || "Could not download all error reports.");
+    } finally {
+      setDownloadAllSaving(false);
+    }
+  }
+
+  async function resetAllErrorReports() {
+    if (typeof window !== "undefined" && !window.confirm("Delete all submitted error reports? This cannot be undone.")) {
+      return;
+    }
+
+    setResetErrorsSaving(true);
+    setErrorReportMessage("");
+    try {
+      const res = await fetch(`${LARAVEL_API}/aahaas-realtime/error-reports`, {
+        method: "DELETE",
+        headers: { Accept: "application/json" },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || "Could not reset error reports.");
+      setErrorReports([]);
+      setSelectedErrorReportIndex(0);
+      setErrorReportsTab("form");
+      setErrorReportMessage(`Deleted ${data.deleted || 0} submitted error report(s).`);
+    } catch (err) {
+      setErrorReportMessage(err.message || "Could not reset error reports.");
+    } finally {
+      setResetErrorsSaving(false);
+    }
   }
 
   // ── Mic capture ───────────────────────────────────────────────────────────
@@ -614,6 +813,10 @@ export default function AahaasRealtimeV02() {
     responseBusyRef.current = false;
     queuedResponseRef.current = false;
     openingSentRef.current = false;
+    setErrorReportMessage("");
+    setErrorReportTitle("Realtime Test Report");
+    setErrorReportSeverity("medium");
+    setErrorReportDetails("");
     beginNewCallSession();  // reset session for new call and invalidate in-flight results
 
     try {
@@ -705,6 +908,10 @@ export default function AahaasRealtimeV02() {
     queuedResponseRef.current = false;
     openingSentRef.current = false;
     aiTransBufRef.current = "";
+    setErrorReportMessage("");
+    setErrorReportTitle("Realtime Test Report");
+    setErrorReportSeverity("medium");
+    setErrorReportDetails("");
   }
 
   // ── Derived ───────────────────────────────────────────────────────────────
@@ -1051,6 +1258,408 @@ export default function AahaasRealtimeV02() {
 
         {/* RIGHT: Terminal */}
         <aside>
+          {/* Error Test Report */}
+          <div style={{ background: "#111827", borderRadius: 14, border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden", marginBottom: 12 }}>
+            <div style={{ padding: "11px 16px", borderBottom: reportCollapsed ? "none" : "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>Error Test Report</span>
+                </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button
+                  type="button"
+                  onClick={() => setErrorReportsTab((p) => (p === "form" ? "reports" : "form"))}
+                  style={{
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: errorReportsTab === "reports" ? "rgba(59,130,246,0.18)" : "rgba(255,255,255,0.04)",
+                    color: errorReportsTab === "reports" ? "#bfdbfe" : "#e2e8f0",
+                    borderRadius: 8,
+                    padding: "7px 10px",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    minWidth: 96,
+                  }}
+                >
+                  {errorReportsTab === "reports" ? "View Reports" : "Write Report"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReportCollapsed((p) => !p)}
+                  style={{
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: "rgba(255,255,255,0.04)",
+                    color: "#e2e8f0",
+                    borderRadius: 8,
+                    padding: "7px 10px",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    minWidth: 72,
+                  }}
+                >
+                  {reportCollapsed ? "Expand" : "Minimize"}
+                </button>
+              </div>
+            </div>
+
+            {!reportCollapsed && (
+              <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => setErrorReportsTab("form")}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 999,
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      background: errorReportsTab === "form" ? "rgba(239,68,68,0.18)" : "rgba(255,255,255,0.04)",
+                      color: errorReportsTab === "form" ? "#fecaca" : "#e2e8f0",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Write Report
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setErrorReportsTab("reports")}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 999,
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      background: errorReportsTab === "reports" ? "rgba(59,130,246,0.18)" : "rgba(255,255,255,0.04)",
+                      color: errorReportsTab === "reports" ? "#bfdbfe" : "#e2e8f0",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    View Reports
+                  </button>
+                </div>
+
+                {errorReportsTab === "form" ? (
+                  <>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 700 }}>Title</span>
+                      <input
+                        value={errorReportTitle}
+                        onChange={(e) => setErrorReportTitle(e.target.value)}
+                        placeholder="Realtime Test Report"
+                        style={{ width: "100%", padding: "9px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "#0f172a", color: "#e2e8f0", fontSize: 12, outline: "none" }}
+                      />
+                    </label>
+
+                    <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 700 }}>Severity</span>
+                      <select
+                        value={errorReportSeverity}
+                        onChange={(e) => setErrorReportSeverity(e.target.value)}
+                        style={{ width: "100%", padding: "9px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "#0f172a", color: "#e2e8f0", fontSize: 12, outline: "none" }}
+                      >
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                      </select>
+                    </label>
+
+                    <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 700 }}>Error details</span>
+                      <textarea
+                        value={errorReportDetails}
+                        onChange={(e) => setErrorReportDetails(e.target.value)}
+                        placeholder="Write the error or test notes here..."
+                        rows={6}
+                        style={{ width: "100%", padding: "10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "#0f172a", color: "#e2e8f0", fontSize: 12, outline: "none", resize: "vertical", lineHeight: 1.5 }}
+                      />
+                    </label>
+
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      <button
+                        type="button"
+                        onClick={submitErrorReport}
+                        disabled={errorReportSaving}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 8,
+                          border: "none",
+                          cursor: errorReportSaving ? "not-allowed" : "pointer",
+                          background: errorReportSaving ? "#475569" : "linear-gradient(135deg,#ef4444,#dc2626)",
+                          color: "#fff",
+                          fontWeight: 700,
+                          fontSize: 12,
+                        }}
+                      >
+                        {errorReportSaving ? "Saving..." : "Submit Error"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setErrorReportsTab("reports")}
+                        disabled={errorReportsLoading && errorReports.length === 0}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: "rgba(59,130,246,0.14)",
+                          color: "#bfdbfe",
+                          fontWeight: 700,
+                          fontSize: 12,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Open Reports Tab
+                      </button>
+                    </div>
+
+                    <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.55 }}>
+                      {errorReportMessage || "Submit a report, then switch to the Reports tab to review, download, or reset saved errors."}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      <button
+                        type="button"
+                        onClick={loadErrorReports}
+                        disabled={errorReportsLoading}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: "rgba(255,255,255,0.04)",
+                          color: "#e2e8f0",
+                          fontWeight: 700,
+                          fontSize: 12,
+                          cursor: errorReportsLoading ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        {errorReportsLoading ? "Loading..." : "Refresh Reports"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={exportErrorDataset}
+                        disabled={errorDatasetSaving || errorReports.length === 0}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: errorDatasetSaving || errorReports.length === 0 ? "rgba(255,255,255,0.04)" : "rgba(16,185,129,0.14)",
+                          color: errorDatasetSaving || errorReports.length === 0 ? "#64748b" : "#6ee7b7",
+                          fontWeight: 700,
+                          fontSize: 12,
+                          cursor: errorDatasetSaving || errorReports.length === 0 ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        {errorDatasetSaving ? "Updating..." : "Update Error Dataset"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={downloadAllErrorReports}
+                        disabled={downloadAllSaving || errorReports.length === 0}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: downloadAllSaving || errorReports.length === 0 ? "rgba(255,255,255,0.04)" : "rgba(59,130,246,0.14)",
+                          color: downloadAllSaving || errorReports.length === 0 ? "#64748b" : "#bfdbfe",
+                          fontWeight: 700,
+                          fontSize: 12,
+                          cursor: downloadAllSaving || errorReports.length === 0 ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        {downloadAllSaving ? "Downloading..." : "Download All JSON"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={resetAllErrorReports}
+                        disabled={resetErrorsSaving || errorReports.length === 0}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: resetErrorsSaving || errorReports.length === 0 ? "rgba(255,255,255,0.04)" : "rgba(239,68,68,0.14)",
+                          color: resetErrorsSaving || errorReports.length === 0 ? "#64748b" : "#fecaca",
+                          fontWeight: 700,
+                          fontSize: 12,
+                          cursor: resetErrorsSaving || errorReports.length === 0 ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        {resetErrorsSaving ? "Deleting..." : "Reset All Errors"}
+                      </button>
+                    </div>
+
+                    <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.55 }}>
+                      {errorReportMessage || "Browse saved errors one by one. Use the buttons above to export the local errortest*.json files or clear everything from the database."}
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "170px 1fr", gap: 10, alignItems: "start", marginTop: 2 }}>
+                      <div style={{ maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, paddingRight: 4 }}>
+                        {errorReports.length === 0 ? (
+                          <div style={{ fontSize: 11, color: "#64748b", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, padding: "10px 12px" }}>
+                            No submitted errors yet.
+                          </div>
+                        ) : (
+                          errorReports.map((report, index) => {
+                            const isSelected = index === selectedErrorReportIndex;
+                            return (
+                              <button
+                                key={report.report_id}
+                                type="button"
+                                onClick={() => setSelectedErrorReportIndex(index)}
+                                style={{
+                                  textAlign: "left",
+                                  background: isSelected ? "rgba(59,130,246,0.16)" : "rgba(255,255,255,0.04)",
+                                  border: `1px solid ${isSelected ? "rgba(96,165,250,0.35)" : "rgba(255,255,255,0.06)"}`,
+                                  borderRadius: 8,
+                                  padding: "10px 12px",
+                                  color: "#e2e8f0",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {index + 1}. {report.title}
+                                </div>
+                                <div style={{ fontSize: 10, color: "#94a3b8", lineHeight: 1.45 }}>
+                                  {report.report_id}
+                                  <br />
+                                  {report.severity || "medium"} · {report.created_at ? new Date(report.created_at).toLocaleString() : "just now"}
+                                </div>
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: 12, minHeight: 260 }}>
+                        {getSelectedErrorReport() ? (() => {
+                          const report = getSelectedErrorReport();
+                          return (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 700 }}>
+                                    {selectedErrorReportIndex + 1} of {errorReports.length}: {report.title}
+                                  </div>
+                                  <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 3 }}>
+                                    {report.report_id} · {report.severity || "medium"} · {report.created_at ? new Date(report.created_at).toLocaleString() : "just now"}
+                                  </div>
+                                </div>
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedErrorReportIndex((i) => Math.max(0, i - 1))}
+                                    disabled={selectedErrorReportIndex === 0}
+                                    style={{
+                                      padding: "7px 10px",
+                                      borderRadius: 7,
+                                      border: "1px solid rgba(255,255,255,0.12)",
+                                      background: selectedErrorReportIndex === 0 ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.06)",
+                                      color: selectedErrorReportIndex === 0 ? "#64748b" : "#e2e8f0",
+                                      fontWeight: 700,
+                                      fontSize: 11,
+                                      cursor: selectedErrorReportIndex === 0 ? "not-allowed" : "pointer",
+                                    }}
+                                  >
+                                    Previous
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedErrorReportIndex((i) => Math.min(errorReports.length - 1, i + 1))}
+                                    disabled={selectedErrorReportIndex >= errorReports.length - 1}
+                                    style={{
+                                      padding: "7px 10px",
+                                      borderRadius: 7,
+                                      border: "1px solid rgba(255,255,255,0.12)",
+                                      background: selectedErrorReportIndex >= errorReports.length - 1 ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.06)",
+                                      color: selectedErrorReportIndex >= errorReports.length - 1 ? "#64748b" : "#e2e8f0",
+                                      fontWeight: 700,
+                                      fontSize: 11,
+                                      cursor: selectedErrorReportIndex >= errorReports.length - 1 ? "not-allowed" : "pointer",
+                                    }}
+                                  >
+                                    Next
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                                <div style={{ background: "rgba(15,23,42,0.8)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 8, padding: 10 }}>
+                                  <div style={{ fontSize: 10, color: "#94a3b8", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>Details</div>
+                                  <div style={{ fontSize: 12, color: "#cbd5e1", marginTop: 6, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+                                    {report.details}
+                                  </div>
+                                </div>
+                                <div style={{ background: "rgba(15,23,42,0.8)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 8, padding: 10 }}>
+                                  <div style={{ fontSize: 10, color: "#94a3b8", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>Meta</div>
+                                  <div style={{ fontSize: 11, color: "#cbd5e1", marginTop: 6, lineHeight: 1.55 }}>
+                                    Session: {report.session_id || "n/a"}
+                                    <br />
+                                    Country: {report.country || "n/a"}
+                                    <br />
+                                    Phase: {report.phase || "n/a"}
+                                    <br />
+                                    Package: {report.package_status || "n/a"}
+                                    <br />
+                                    Quote: {report.quotation_status || "n/a"}
+                                    <br />
+                                    Export File: {report.export_file_name || "n/a"}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                                <button
+                                  type="button"
+                                  onClick={() => openJsonInNewTab(report, `${report.report_id || "error-report"}.json`)}
+                                  style={{
+                                    padding: "8px 10px",
+                                    borderRadius: 8,
+                                    border: "1px solid rgba(255,255,255,0.12)",
+                                    background: "rgba(59,130,246,0.14)",
+                                    color: "#bfdbfe",
+                                    fontWeight: 700,
+                                    fontSize: 11,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  View Raw JSON
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => downloadJsonFile(report, `${report.report_id || "error-report"}.json`)}
+                                  style={{
+                                    padding: "8px 10px",
+                                    borderRadius: 8,
+                                    border: "1px solid rgba(255,255,255,0.12)",
+                                    background: "rgba(16,185,129,0.14)",
+                                    color: "#6ee7b7",
+                                    fontWeight: 700,
+                                    fontSize: 11,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Download This JSON
+                                </button>
+                              </div>
+
+                              <div style={{ fontSize: 10, color: "#94a3b8", lineHeight: 1.5 }}>
+                                Use Previous / Next to browse reports one by one. The list on the left selects a report directly.
+                              </div>
+                            </div>
+                          );
+                        })() : (
+                          <div style={{ fontSize: 11, color: "#64748b" }}>Select a saved report to inspect it here.</div>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
           <div style={{ background: "#0d1117", borderRadius: 14, border: "1px solid rgba(255,255,255,0.07)", overflow: "hidden" }}>
             <div style={{ padding: "11px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0" }}>Live Terminal</span>

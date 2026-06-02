@@ -30,6 +30,7 @@ use App\Http\Controllers\AahaasAssistentV01PackageStatusController;
 use App\Http\Controllers\AahaasAssistentV01AmbientMusicController;
 use App\Http\Controllers\AahaasAssistentV01SendQuotationController;
 use App\Http\Controllers\AahaasRealtimeSessionController;
+use App\Http\Controllers\AahaasRealtimeErrorDatasetController;
 use App\Http\Controllers\AahaasRealtimeToolController;
 use App\Http\Controllers\AahaasRealtimeSaveController;
 use App\Http\Controllers\FiveVChatGptAssisEndController;
@@ -122,9 +123,21 @@ Route::options('/aahaas-assistent-v01/send-quotation', fn () => response('', 204
 Route::post('/aahaas-realtime/session', AahaasRealtimeSessionController::class);
 Route::post('/aahaas-realtime/tool', AahaasRealtimeToolController::class);
 Route::post('/aahaas-realtime/save', AahaasRealtimeSaveController::class);
+Route::get('/aahaas-realtime/error-reports', [AahaasRealtimeErrorDatasetController::class, 'index']);
+Route::post('/aahaas-realtime/error-reports', [AahaasRealtimeErrorDatasetController::class, 'store']);
+Route::post('/aahaas-realtime/error-reports/export', [AahaasRealtimeErrorDatasetController::class, 'export']);
+Route::get('/aahaas-realtime/error-reports/download', [AahaasRealtimeErrorDatasetController::class, 'downloadAll']);
+Route::delete('/aahaas-realtime/error-reports', [AahaasRealtimeErrorDatasetController::class, 'destroyAll']);
+Route::match(['get', 'post'], '/aahaas-realtime/error-dataset/{fileName?}', AahaasRealtimeErrorDatasetController::class)
+    ->where('fileName', '[A-Za-z0-9_.-]+');
 Route::options('/aahaas-realtime/session', fn () => response('', 204));
 Route::options('/aahaas-realtime/tool', fn () => response('', 204));
 Route::options('/aahaas-realtime/save', fn () => response('', 204));
+Route::options('/aahaas-realtime/error-reports', fn () => response('', 204));
+Route::options('/aahaas-realtime/error-reports/export', fn () => response('', 204));
+Route::options('/aahaas-realtime/error-reports/download', fn () => response('', 204));
+Route::options('/aahaas-realtime/error-dataset/{fileName?}', fn () => response('', 204))
+    ->where('fileName', '[A-Za-z0-9_.-]+');
 Route::get('/aahaas-chatgpt-3v/hold-music', AahaasChatGpt3vHoldMusicController::class);
 Route::post('/aahaas-chatgpt-3v/session', AahaasChatGpt3vSessionController::class);
 Route::post('/aahaas-chatgpt-3v/turn', AahaasChatGpt3vTurnController::class);
