@@ -40,6 +40,10 @@ const PHASES = {
 
 function msToDisplay(ms) { return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`; }
 
+// Keep the mic muted for a short tail after the AI's last audio chunk finishes, so
+// the speaker echo of its final words doesn't leak back and trigger a false turn.
+const AI_ECHO_TAIL_SEC = 0.4;
+
 // Actions the /v1/voice/suggest API understands. Anything outside this set is
 // dropped from the payload so the API classifies the turn itself — we never
 // default a missing/garbled action to new_request, which would reset the cart.
@@ -263,12 +267,21 @@ export default function AahaasRealtimeV02() {
       for (let i = 0; i < f32.length; i++) sum += f32[i] * f32[i];
       const rms = Math.sqrt(sum / f32.length);
       setMicLevel((p) => p * 0.6 + rms * 0.4);
-      // Stream the raw audio — we deliberately do NOT gate it here anymore.
-      // A crude RMS gate clipped soft speech onsets and double-processed against the
-      // server VAD. Noise handling now lives where it belongs: OpenAI's near_field
-      // noise_reduction + semantic_vad on the server. `sensitivity` only drives the
-      // on-screen level indicator now, not what we send.
-      const pcm = float32ToPcm16(f32);
+
+      // ── Half-duplex echo guard ──────────────────────────────────────────────
+      // On SPEAKERS the AI's own voice leaks back into the mic. Browser echo-
+      // cancellation does not reliably cancel Web-Audio playback, so the model was
+      // hearing itself, firing speech_started, and cutting its own reply off
+      // mid-sentence (also what made it sound choppy). While the AI is speaking —
+      // or searching with hold music — we send SILENCE upstream so it never hears
+      // itself. When it's the caller's turn we stream the full mic and let the
+      // server's noise_reduction + semantic_vad handle background noise.
+      const ctx = audioCtxRef.current;
+      const aiBusyPhase = ["speaking", "searching", "sending_wa"].includes(phaseRef.current);
+      const aiAudioTail = ctx && ctx.currentTime < nextPlayTimeRef.current + AI_ECHO_TAIL_SEC;
+      const muteMic     = responseBusyRef.current || aiBusyPhase || aiAudioTail;
+
+      const pcm = muteMic ? new Int16Array(f32.length) : float32ToPcm16(f32);
       wsRef.current.send(JSON.stringify({ type: "input_audio_buffer.append", audio: bufToBase64(pcm.buffer) }));
     };
 
