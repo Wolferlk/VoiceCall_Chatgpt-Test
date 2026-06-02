@@ -263,8 +263,13 @@ export default function AahaasRealtimeV02() {
       for (let i = 0; i < f32.length; i++) sum += f32[i] * f32[i];
       const rms = Math.sqrt(sum / f32.length);
       setMicLevel((p) => p * 0.6 + rms * 0.4);
-      const gated = rms >= sensitivity ? float32ToPcm16(f32) : new Int16Array(f32.length);
-      wsRef.current.send(JSON.stringify({ type: "input_audio_buffer.append", audio: bufToBase64(gated.buffer) }));
+      // Stream the raw audio — we deliberately do NOT gate it here anymore.
+      // A crude RMS gate clipped soft speech onsets and double-processed against the
+      // server VAD. Noise handling now lives where it belongs: OpenAI's near_field
+      // noise_reduction + semantic_vad on the server. `sensitivity` only drives the
+      // on-screen level indicator now, not what we send.
+      const pcm = float32ToPcm16(f32);
+      wsRef.current.send(JSON.stringify({ type: "input_audio_buffer.append", audio: bufToBase64(pcm.buffer) }));
     };
 
     source.connect(processor);
@@ -417,6 +422,12 @@ export default function AahaasRealtimeV02() {
       customer_voice_prompt: customerPrompt,
     };
     if (action) payload.action = action;   // omit when unknown => API classifies
+    // Structured slots the model extracted this turn (nights, travelers, add/remove
+    // items, etc.). Laravel composes these into a precise, deterministic prompt so a
+    // "change" turn isn't left to free-text guessing. Only forward a non-empty object.
+    if (args.details && typeof args.details === "object" && Object.keys(args.details).length > 0) {
+      payload.details = args.details;
+    }
     // Automatically include session_id if we have one (maintains cart state)
     if (voiceSessionIdRef.current) payload.session_id = voiceSessionIdRef.current;
 
@@ -747,7 +758,7 @@ export default function AahaasRealtimeV02() {
               </div>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-              <span style={{ fontSize: 11, color: "#64748b" }}>Noise gate</span>
+              <span style={{ fontSize: 11, color: "#64748b" }}>Indicator threshold</span>
               <span style={{ fontSize: 11, fontWeight: 700, color: "#6366f1" }}>
                 {sensitivity < 0.008 ? "Very sensitive" : sensitivity < 0.025 ? "Balanced" : "Strict"}
               </span>
@@ -755,6 +766,9 @@ export default function AahaasRealtimeV02() {
             <input type="range" min={0.003} max={0.06} step={0.001} value={sensitivity}
               onChange={(e) => setSensitivity(parseFloat(e.target.value))}
               style={{ width: "100%", accentColor: "#6366f1", cursor: "pointer" }} />
+            <p style={{ fontSize: 10, color: "#94a3b8", margin: "6px 0 0", lineHeight: 1.5 }}>
+              Visual only. Actual noise filtering & turn-taking are handled automatically on the server (near-field noise reduction + semantic VAD).
+            </p>
           </div>
 
           {/* WhatsApp Status */}

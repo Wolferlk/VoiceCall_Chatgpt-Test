@@ -23,6 +23,11 @@ class AahaasRealtimeToolController extends Controller
             'customer_voice_prompt' => ['nullable', 'string', 'max:1000'],
             'action'                => ['nullable', 'string', 'max:50'],
             'session_id'            => ['nullable', 'string', 'max:100'],
+            // Structured slots the realtime model extracted for this turn. Optional.
+            // Validated only as an array on purpose — per-field sanitising/clamping is
+            // done in composeCanonicalPrompt so a single malformed slot can never 422
+            // the whole turn (a failed package fetch mid-call is worse than a dropped slot).
+            'details'               => ['nullable', 'array'],
             // send_whatsapp_quotation
             'customer_name'         => ['nullable', 'string', 'max:200'],
             'phone_number'          => ['nullable', 'string', 'max:30'],
@@ -43,6 +48,7 @@ class AahaasRealtimeToolController extends Controller
         $prompt    = trim((string) ($args['customer_voice_prompt'] ?? ''));
         $action    = trim((string) ($args['action']    ?? ''));
         $sessionId = trim((string) ($args['session_id'] ?? ''));
+        $details   = is_array($args['details'] ?? null) ? $args['details'] : [];
 
         if ($prompt === '') {
             return response()->json([
@@ -51,7 +57,12 @@ class AahaasRealtimeToolController extends Controller
             ]);
         }
 
-        $payload = ['prompt' => $prompt];
+        // The suggest API only accepts a free-text `prompt`. Rather than ship the raw
+        // utterance and hope the parser guesses right (lossy on "change" turns), we
+        // fold the model's structured slots into one explicit, deterministic prompt.
+        $finalPrompt = $this->composeCanonicalPrompt($prompt, $details);
+
+        $payload = ['prompt' => $finalPrompt];
 
         // Reuse the session from a previous turn so the API keeps cart state
         if ($sessionId !== '') {
@@ -72,7 +83,8 @@ class AahaasRealtimeToolController extends Controller
         Log::info('AahaasRealtimeTool: calling suggest API', [
             'action'     => $action,
             'session_id' => $sessionId ?: '(new)',
-            'prompt'     => mb_substr($prompt, 0, 120),
+            'prompt'     => mb_substr($finalPrompt, 0, 200),
+            'details'    => $details ?: '(none)',
         ]);
 
         try {
@@ -130,6 +142,68 @@ class AahaasRealtimeToolController extends Controller
                 'result'  => 'Package service unreachable. We will follow up via WhatsApp.',
             ]);
         }
+    }
+
+    /**
+     * Fold the customer's raw words + the model's structured slots into a single
+     * explicit prompt for the suggest API. The API only reads free text, so we make
+     * that text unambiguous instead of relying on it to re-parse loose speech —
+     * critical for "change"/"add" turns where a missed word changes the cart.
+     *
+     * The raw utterance is always preserved (parser keeps full context); the
+     * structured lines just remove ambiguity.
+     */
+    private function composeCanonicalPrompt(string $prompt, array $details): string
+    {
+        $lines = [];
+
+        // Scalar slot → trimmed, length-capped string ('' if not a usable scalar).
+        $str = static function ($v, int $max = 200): string {
+            if (! is_scalar($v)) {
+                return '';
+            }
+            return mb_substr(trim((string) $v), 0, $max);
+        };
+        // Clamp an integer-ish slot into [min, max]; 0 means "not provided / ignore".
+        $int = static function ($v, int $min, int $max): int {
+            if (! is_numeric($v)) {
+                return 0;
+            }
+            $n = (int) $v;
+            return ($n < $min || $n > $max) ? 0 : $n;
+        };
+        // Array slot → up to 10 trimmed, capped, non-empty strings.
+        $list = static function ($v) use ($str): array {
+            if (! is_array($v)) {
+                return [];
+            }
+            $out = [];
+            foreach (array_slice($v, 0, 10) as $item) {
+                if (($s = $str($item)) !== '') {
+                    $out[] = $s;
+                }
+            }
+            return $out;
+        };
+
+        if (($v = $str($details['destination'] ?? null)) !== '') $lines[] = "Destination: {$v}.";
+        if (($n = $int($details['nights']      ?? null, 1, 60)) > 0) $lines[] = "Stay: {$n} nights.";
+        if (($n = $int($details['travelers']   ?? null, 1, 50)) > 0) $lines[] = "Travelers: {$n}.";
+        if (($n = $int($details['star_rating'] ?? null, 1, 7))  > 0) $lines[] = "Hotel category: {$n}-star.";
+        if (($v = $str($details['hotel_name']  ?? null)) !== '') $lines[] = "Hotel: {$v}.";
+
+        if (($a = $list($details['add_items']    ?? null)) !== []) $lines[] = "Add: "    . implode(', ', $a) . ".";
+        if (($a = $list($details['remove_items'] ?? null)) !== []) $lines[] = "Remove: " . implode(', ', $a) . ".";
+
+        if (($v = $str($details['date_or_month'] ?? null)) !== '') $lines[] = "When: {$v}.";
+        if (($v = $str($details['budget']        ?? null)) !== '') $lines[] = "Budget: {$v}.";
+        if (($v = $str($details['notes']         ?? null, 500)) !== '') $lines[] = "Notes: {$v}.";
+
+        if ($lines === []) {
+            return $prompt;   // nothing structured this turn — send the raw words
+        }
+
+        return "Customer said: \"{$prompt}\"\n\nStructured request:\n" . implode("\n", $lines);
     }
 
     /**

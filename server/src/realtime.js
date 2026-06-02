@@ -23,7 +23,13 @@ PACKAGE TOOL — fetch_travel_package
 Call this tool whenever the customer says ANYTHING about travel. You must:
 
 1. Pass customer_voice_prompt = the customer's EXACT spoken words (do not rewrite).
-2. Pick the correct action from this list:
+2. ALSO fill the structured "details" object with ONLY the facts the customer stated THIS turn
+   (e.g. nights, travelers, star_rating, hotel_name, add_items, remove_items, destination,
+   date_or_month, budget). Leave out anything they did not mention — never invent or carry over
+   old values. This is critical on "change"/"add" turns: if they say "make it five nights and
+   drop the city tour", set details.nights = 5 and details.remove_items = ["city tour"]. The raw
+   words still go in customer_voice_prompt; details just makes the request unambiguous.
+3. Pick the correct action from this list:
 
    new_request   → first travel request, or customer wants a completely new trip
    add_hotel     → customer mentions a specific hotel to add or switch to
@@ -32,8 +38,8 @@ Call this tool whenever the customer says ANYTHING about travel. You must:
    price_query   → customer asks about cost, total, or price (INSTANT — no re-plan)
    confirm       → customer says yes / agrees / wants to book
 
-3. Speak the voice_text from the response word-for-word — it is already optimised for TTS.
-4. Also mention additional options naturally: "You could also add [name] for around [price]."
+4. Speak the voice_text from the response word-for-word — it is already optimised for TTS.
+5. Also mention additional options naturally: "You could also add [name] for around [price]."
 
 RULES:
 - Call fetch_travel_package for EVERY travel-related turn (add, change, price check, confirm).
@@ -90,6 +96,28 @@ const REALTIME_TOOLS = [
             "add_product=add activity/tour/experience, change=modify nights/dates/pax/stars/remove, " +
             "price_query=ask cost (instant), confirm=customer agrees to book.",
         },
+        // Structured slots. The customer talks loosely ("make it five nights and
+        // drop the city tour"); fill ONLY the fields they actually mentioned THIS
+        // turn so the backend gets an unambiguous delta instead of guessing from text.
+        details: {
+          type: "object",
+          description:
+            "Structured version of what the customer asked for THIS turn. Fill only fields " +
+            "the customer explicitly mentioned; leave the rest out. Used to build a precise, " +
+            "deterministic request — especially important for 'change' and 'add' turns.",
+          properties: {
+            destination:  { type: "string",  description: "City/country to travel to, if mentioned." },
+            nights:       { type: "integer", description: "Number of nights, if the customer set or changed it." },
+            travelers:    { type: "integer", description: "Number of travelers, if mentioned or changed." },
+            star_rating:  { type: "integer", description: "Hotel star rating (e.g. 3, 4, 5), if mentioned." },
+            hotel_name:   { type: "string",  description: "Specific hotel to add/switch to, if named." },
+            add_items:    { type: "array", items: { type: "string" }, description: "Activities/tours/products to ADD this turn." },
+            remove_items: { type: "array", items: { type: "string" }, description: "Named items the customer wants to REMOVE this turn." },
+            date_or_month:{ type: "string",  description: "Travel dates or month, if mentioned (e.g. 'next week', 'December')." },
+            budget:       { type: "string",  description: "Budget or price ceiling, if mentioned (with currency if given)." },
+            notes:        { type: "string",  description: "Any other concrete preference (board basis, room type, etc.)." },
+          },
+        },
       },
       required: ["customer_voice_prompt", "action"],
     },
@@ -121,14 +149,24 @@ function buildSessionUpdate(voice = "coral", country = "Sri Lanka") {
       output_modalities: ["audio"],
       audio: {
         input: {
+          // Built-in OpenAI noise reduction. near_field = close mic (headset/phone
+          // held to face), which suppresses room/background noise BEFORE the audio
+          // ever reaches the VAD + transcriber. This is what stops stray background
+          // sound from being "heard" and acted on, ChatGPT-style.
+          noise_reduction: { type: "near_field" },
           turn_detection: {
-            type:                "server_vad",
-            // 0.8 was too aggressive — soft/short utterances never crossed it, so the
-            // model never took a turn and the tool never fired. 0.5 is the balanced default.
-            threshold:           0.5,
-            prefix_padding_ms:   300,
-            silence_duration_ms: 1000,
-            create_response:     true,
+            // semantic_vad uses a model to decide when the caller has actually
+            // FINISHED a meaningful thought — not just "is there sound". This is the
+            // core of the natural, ChatGPT-like feel: it ignores coughs, TV, side
+            // chatter and short noises instead of treating every blip as a turn.
+            type:              "semantic_vad",
+            // "low" = Patient. Waits longer for the caller to finish before the AI
+            // takes a turn, so it rarely cuts people off or fires on background noise.
+            eagerness:         "low",
+            create_response:   true,
+            // Let a genuine interruption (caller starts talking over the AI) cut the
+            // AI's reply, but noise alone won't — semantic_vad gates that.
+            interrupt_response: true,
           },
           transcription: { model: "gpt-realtime-whisper" },
         },
