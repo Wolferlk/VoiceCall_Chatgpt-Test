@@ -56,6 +56,7 @@ use App\Http\Controllers\ReceptionCallSessionController;
 use App\Http\Controllers\ReceptionCallTurnController;
 use App\Http\Controllers\TextAiVoiceController;
 use App\Http\Controllers\TextToSpeechController;
+use App\Http\Controllers\ElevenLabsConversationTokenController;
 use App\Http\Controllers\TripCallEndController;
 use App\Http\Controllers\TripCallSessionController;
 use App\Http\Controllers\TripCallTurnController;
@@ -83,7 +84,9 @@ Route::get('/health', fn () => response()->json([
     'openaiConfigured' => filled(env('OPENAI_API_KEY')),
 ]));
 Route::get('/elevenlabs/signed-url', ElevenLabsSignedUrlController::class);
+Route::get('/elevenlabs/conversation-token', ElevenLabsConversationTokenController::class);
 Route::options('/elevenlabs/signed-url', fn () => response('', 204));
+Route::options('/elevenlabs/conversation-token', fn () => response('', 204));
 Route::post('/tts', TextToSpeechController::class);
 Route::post('/ai-call', AiCallController::class);
 Route::post('/text-ai-voice', TextAiVoiceController::class);

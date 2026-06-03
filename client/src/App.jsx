@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import AahaasAssistantCall from "./components/AahaasAssistantCall";
 import AahaasAssistentFinalV01 from "./components/AahaasAssistentFinalV01";
 import AahaasRealtimeV02 from "./components/AahaasRealtimeV02";
+import AahaasRealtimeV03 from "./components/AahaasRealtimeV03";
 import AahaasChatGpt3vHome from "./components/AahaasChatGpt3vHome";
 import AiAssistentFinalTest from "./components/AiAssistentFinalTest";
 import AssistenUvindu from "./components/Assisten_Uvindu";
@@ -28,6 +29,12 @@ const BACKEND_OPTIONS = {
 };
 
 const WORKSPACE_MODES = [
+  {
+    id: "aahaas-realtime-v03",
+    label: "Aahaas Realtime V0.3 ✦",
+    kicker: "ElevenLabs ConvAI · Premium Voice",
+    description: "Full-featured call agent powered by ElevenLabs Conversational AI. Beautiful phone-call UI, developer mode with live terminal, package search, and WhatsApp quotation flow."
+  },
   {
     id: "aahaas-realtime-v02",
     label: "Aahaas Realtime V0.2 ⚡",
@@ -150,7 +157,7 @@ export default function App() {
   const [page, setPage] = useState(() =>
     typeof window !== "undefined" ? pageFromHash(window.location.hash) : "workspace"
   );
-  const [activeMode, setActiveMode] = useState("aahaas-realtime-v02");
+  const [activeMode, setActiveMode] = useState("aahaas-realtime-v03");
   const [speechText, setSpeechText] = useState("");
   const [speaking, setSpeaking] = useState(false);
   const [error, setError] = useState("");
@@ -506,6 +513,10 @@ export default function App() {
   const activeModeMeta = WORKSPACE_MODES.find((mode) => mode.id === activeMode) || WORKSPACE_MODES[0];
 
   function renderActivePanel() {
+    if (activeMode === "aahaas-realtime-v03") {
+      return <AahaasRealtimeV03 />;
+    }
+
     if (activeMode === "aahaas-realtime-v02") {
       return <AahaasRealtimeV02 />;
     }

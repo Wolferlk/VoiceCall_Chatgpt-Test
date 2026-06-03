@@ -5,7 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Http;
 
-class ElevenLabsSignedUrlController extends Controller
+class ElevenLabsConversationTokenController extends Controller
 {
     public function __invoke(): JsonResponse
     {
@@ -19,22 +19,21 @@ class ElevenLabsSignedUrlController extends Controller
             );
         }
 
-        // Request a signed URL from ElevenLabs (requires convai_write permission on the API key)
         if (empty($apiKey)) {
             return response()->json(['error' => 'ELEVENLABS_API_KEY is not configured.'], 400);
         }
 
         $response = Http::withHeaders(['xi-api-key' => $apiKey])
             ->timeout(15)
-            ->get('https://api.elevenlabs.io/v1/convai/conversation/get_signed_url', [
+            ->get('https://api.elevenlabs.io/v1/convai/conversation/token', [
                 'agent_id' => $agentId,
+                'environment' => env('ELEVENLABS_ENVIRONMENT', 'production'),
             ]);
 
         if ($response->ok()) {
-            return response()->json(['signed_url' => $response->json('signed_url')]);
+            return response()->json(['conversation_token' => $response->json('token')]);
         }
 
-        // Return the ElevenLabs error so the frontend can log it and fall back gracefully
         return response()->json(
             ['error' => 'ElevenLabs: ' . $response->body()],
             502
