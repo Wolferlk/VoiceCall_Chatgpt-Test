@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { Conversation } from "@11labs/client";
 
 const LARAVEL_API  = import.meta.env.VITE_LARAVEL_API_BASE_URL || "http://localhost:8000/api";
-const SUGGEST_API  = "https://travel-parser-live.aahaas.com/v1/voice/suggest";
-const WHATSAPP_API = "https://travel-parser-live.aahaas.com/v1/voice/send-whatsapp";
-const EL_AGENT_ID  = import.meta.env.VITE_ELEVENLABS_AGENT_ID || "";
-const EL_API_KEY   = import.meta.env.VITE_ELEVENLABS_API_KEY  || "";
+const SUGGEST_API  = import.meta.env.VITE_SUGGEST_API  || "https://travel-parser-live.aahaas.com/v1/voice/suggest";
+const WHATSAPP_API = import.meta.env.VITE_WHATSAPP_API || "https://travel-parser-live.aahaas.com/v1/voice/send-whatsapp";
+const EL_AGENT_ID  = (import.meta.env.VITE_ELEVENLABS_AGENT_ID || "").trim();
+const EL_API_KEY   = (import.meta.env.VITE_ELEVENLABS_API_KEY  || "").trim();
 
 // ── voices ────────────────────────────────────────────────────────────────────
 const EL_VOICES = [
@@ -94,15 +94,20 @@ This call creates a quotation only — nothing is booked. NEVER say "booking con
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TOOL RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-fetch_travel_package — call for EVERY travel-related customer turn:
-  • new_request  — first or completely new trip (resets context)
-  • add_hotel    — customer names a specific hotel
-  • add_product  — add activity, tour, or transfer
-  • change       — modify nights / dates / pax / stars / remove item
-  • price_query  — cost question (instant, no hold needed)
-  • confirm      — customer says they're happy with the plan
+fetch_travel_package — the ONLY product search tool. Call it for every customer request without exception:
+  • new_request  — first request or completely new trip (resets context)
+  • add_hotel    — hotel or accommodation search (any star rating, any location)
+  • add_product  — flights, activities, day tours, airport transfers, visa services, or any other service
+  • change       — modify nights / dates / pax / star rating / remove or swap an item
+  • price_query  — customer asks about cost (no hold needed, answer immediately)
+  • confirm      — customer is happy and approves the plan
 
-send_whatsapp_quotation — ONLY after digit-by-digit number confirmation. Include a rich summary paragraph describing the full agreed package.
+IMPORTANT: Use fetch_travel_package for:
+  ✓ Travel packages    ✓ Hotel bookings     ✓ Flight tickets
+  ✓ Airport transfers  ✓ Day tours          ✓ Activities
+  ✓ Safari / excursions ✓ Visa assistance   ✓ Any Aahaas service
+
+send_whatsapp_quotation — ONLY after digit-by-digit number confirmation. The summary field must be a complete paragraph of everything agreed.
 
 When unclear → ask once, briefly. "Could you say that again?"
 
@@ -113,18 +118,18 @@ const TOOL_SCHEMAS = [
   {
     type: "client",
     name: "fetch_travel_package",
-    description: "Search and build a travel package. Call for EVERY travel-related customer turn — even small changes. Always pass the customer's exact spoken words. Never rewrite or paraphrase.",
+    description: "Search Aahaas products and build the travel package. Call this for EVERY customer request — hotel search, flight search, activity/tour search, transfer search, travel package search, price query, or any change. This is the ONLY search API — use it for all product types. Always pass the customer's exact spoken words plus any defaults you applied.",
     parameters: {
       type: "object",
       properties: {
         customer_voice_prompt: {
           type: "string",
-          description: "Customer's exact spoken words, including any defaults you applied (e.g. '3 nights 2 adults 3-star Kandy next Friday').",
+          description: "Full search prompt including customer's spoken words and any silent defaults applied (e.g. '3 nights 2 adults 3-star hotel Kandy starting next Friday', or 'return flight Colombo to Dubai for 2 adults', or 'city tour Kandy half day'). Be specific — the more detail, the better the results.",
         },
         action: {
           type: "string",
           enum: ["new_request", "add_hotel", "add_product", "change", "price_query", "confirm"],
-          description: "new_request=first/new trip; add_hotel=specific hotel; add_product=activity/tour/transfer; change=modify existing; price_query=cost only; confirm=customer approves plan.",
+          description: "new_request=first or completely new search; add_hotel=hotel/accommodation search; add_product=flight, activity, tour, transfer, or any service; change=modify existing item; price_query=cost question; confirm=customer approves the plan.",
         },
       },
       required: ["customer_voice_prompt", "action"],
